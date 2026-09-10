@@ -71,21 +71,21 @@
     box-shadow: -1px -1px 2px rgba(0,0,0,0.2);
 }
 
-/* コントロールボタンコンテナ - 修正: 横並びで最下部に配置 */
+/* コントロールボタンコンテナ - 横並びで最下部に配置 */
 #image-control-container {
     position: fixed;
     left: 10px;
-    bottom: 10px; /* 最下部に配置 */
+    bottom: 10px;
     z-index: 10000;
     display: flex;
-    flex-direction: row; /* 横並び */
+    flex-direction: row;
     gap: 5px;
 }
 
 /* コントロールボタン共通スタイル */
-#text-mode-button, /* 追加: テキストモードボタン */
-#custom-button, 
-#maximize-button, 
+#text-mode-button,
+#custom-button,
+#maximize-button,
 #half-maximize-button {
     padding: 5px 10px;
     cursor: pointer;
@@ -99,9 +99,9 @@
     white-space: nowrap;
 }
 
-#text-mode-button:hover, /* 追加: テキストモードボタンのホバー */
-#custom-button:hover, 
-#maximize-button:hover, 
+#text-mode-button:hover,
+#custom-button:hover,
+#maximize-button:hover,
 #half-maximize-button:hover {
     background-color: #666;
     opacity: 1; /* ホバー時は不透明度100% */
@@ -148,7 +148,7 @@ button.enabled {
     padding: 10px;
     z-index: 10001;
     box-shadow: 0 4px 8px rgba(0,0,0,0.5);
-    display: none; /* 初期状態は非表示 */
+    display: none;
 }
 
 #custom-window h3 {
