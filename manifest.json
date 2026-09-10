@@ -1,9 +1,9 @@
 {
-    "display_name": "Image Display Extension",
-    "js": "image-display.js",
-    "css": "image-display.css",
-    "author": "Your Name",
-    "version": "1.1.0",
-    "description": "Displays context-aware images with draggable/resizable window",
-    "auto_update": true
+  "display_name": "Image Display Extension",
+  "js": "image-display.js",
+  "css": "image-display.css",
+  "author": "Your Name",
+  "version": "1.1.0",
+  "description": "Displays context-aware images with draggable/resizable window",
+  "auto_update": true
 }
