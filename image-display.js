@@ -757,28 +757,56 @@ function initImageDisplay() {
         }
     }
 
-    // チャット要素の監視設定
-    const chatContainer = document.getElementById('chat');
-    if (chatContainer) {
-        const observer = new MutationObserver((mutations) => {
-            handleStreamingUpdate();
-        });
-        observer.observe(chatContainer, {
-            childList: true,
-            subtree: true
-        });
-        console.log(`✅ チャット欄(${currentTextMode === 'user' ? 'ユーザー' : 'AI'}メッセージ)の監視を開始しました。`);
+    // --- SillyTavern EventSource イベント登録（MutationObserver の代替） ---
+    function setupEventSourceListeners() {
+        const context = (window.SillyTavern && typeof window.SillyTavern.getContext === 'function')
+            ? window.SillyTavern.getContext()
+            : null;
+
+        if (context && context.eventSource && context.eventTypes) {
+            const { eventSource, eventTypes } = context;
+
+            // メッセージ生成中・ストリーミング時
+            if (eventTypes.STREAM_TOKEN_RECEIVED) {
+                eventSource.on(eventTypes.STREAM_TOKEN_RECEIVED, () => {
+                    handleStreamingUpdate();
+                });
+            }
+
+            // メッセージ描画完了時
+            if (eventTypes.CHARACTER_MESSAGE_RENDERED) {
+                eventSource.on(eventTypes.CHARACTER_MESSAGE_RENDERED, () => {
+                    handleStreamingUpdate();
+                });
+            }
+            if (eventTypes.USER_MESSAGE_RENDERED) {
+                eventSource.on(eventTypes.USER_MESSAGE_RENDERED, () => {
+                    updateImage();
+                });
+            }
+
+            // チャット・キャラクター変更時
+            const onCharacterOrChatChanged = () => {
+                const detectedName = detectCharacterNameFromDOM();
+                handleCharacterChange(detectedName);
+            };
+
+            if (eventTypes.CHAT_CHANGED) {
+                eventSource.on(eventTypes.CHAT_CHANGED, onCharacterOrChatChanged);
+            }
+            if (eventTypes.CHARACTER_SELECTED) {
+                eventSource.on(eventTypes.CHARACTER_SELECTED, onCharacterOrChatChanged);
+            }
+
+            console.log(`✅ SillyTavern EventSource による監視を開始しました。`);
+        } else {
+            console.warn("⚠️ SillyTavern EventSource が検出できませんでした。フォールバック処理を実行します。");
+            // EventSource が未初期化の場合の定期確認
+            setTimeout(setupEventSourceListeners, 1000);
+        }
     }
 
-    // キャラクター変更の監視
-    setInterval(() => {
-        const detectedName = detectCharacterNameFromDOM();
-        if (detectedName !== currentCharacter) {
-            handleCharacterChange(detectedName);
-        }
-    }, 250);
-
-    console.log("🚀 メインループを開始しました。0.25秒ごとにキャラクターを監視します。");
+    setupEventSourceListeners();
 }
 
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
