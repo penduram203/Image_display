@@ -20,7 +20,7 @@
     let currentTextMode = 'user'; // 'user' または 'ai'
     let streamingTimer = null;
     let lastStreamingText = '';
-    const STREAMING_DELAY = 1000;
+    const STREAMING_DELAY = 500;
     let chatDomObserver = null;
 
     // デバウンス処理
@@ -202,7 +202,11 @@
             isNegative = true;
             trimmed = trimmed.substring(4).trim();
         }
-        const matches = text.toLowerCase().includes(trimmed.toLowerCase());
+        
+        // カンマ区切りによるOR評価に対応 (例: "www,ttt")
+        const terms = trimmed.split(',').map(t => t.trim()).filter(t => t);
+        const matches = terms.some(term => text.toLowerCase().includes(term.toLowerCase()));
+        
         return isNegative ? !matches : matches;
     }
 
@@ -270,13 +274,14 @@
         const selector = `.mes[is_user="${isUserMode}"] .mes_text`;
         const messages = Array.from(document.querySelectorAll(selector));
         for (let i = messages.length - 1; i >= 0; i--) {
-            const mediaUrl = findMatchingImageUrl(messages[i].textContent);
+            const textContent = messages[i].textContent || messages[i].innerText || "";
+            const mediaUrl = findMatchingImageUrl(textContent);
             if (mediaUrl) return mediaUrl;
         }
         return null;
     }
 
-    // --- メディア表示更新処理（非同期補完・高速化対応） ---
+    // --- メディア表示更新処理 ---
     async function updateImage() {
         if (isDefaultImageFailed) return;
         const keywordMedia = findLastKeywordImage();
@@ -287,7 +292,7 @@
         }
         newUrl = newUrl.trim();
 
-        // 拡張子が含まれていない場合は描画前に自動検出を実施
+        // 拡張子が含まれていない場合は自動検出を実施
         if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             const detected = await detectImageExtension(newUrl);
             if (detected) {
@@ -327,13 +332,18 @@
         }
     }
 
+    // 描画遅延付きで画面を更新する関数
+    function safeUpdateImage() {
+        setTimeout(() => {
+            updateImage();
+        }, 50);
+    }
+
     async function handleMediaError(element, src) {
         console.error("メディアの読み込みに失敗しました:", src);
         if (src && !src.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            console.log("🔄 拡張子自動検出を試みます:", src);
             const detectedPath = await detectImageExtension(src);
             if (detectedPath) {
-                console.log(`✅ 拡張子を検出: ${detectedPath}`);
                 element.src = detectedPath;
                 if (isVideoUrl(detectedPath) && element.tagName.toLowerCase() === 'video') {
                     element.play().catch(() => {});
@@ -363,7 +373,7 @@
         textModeButton.title = `クリックでテキストモード切り替え（現在: ${currentTextMode === 'user' ? 'ユーザー' : 'AI'}）`;
         console.log(`🔄 テキストモード切替: ${currentTextMode}`);
         saveDisplayState();
-        updateImage();
+        safeUpdateImage();
     }
     textModeButton.addEventListener('click', toggleTextMode);
 
@@ -379,7 +389,7 @@
 
         if (streamingTimer) clearTimeout(streamingTimer);
         streamingTimer = setTimeout(() => {
-            updateImage();
+            safeUpdateImage();
         }, STREAMING_DELAY);
     }
 
@@ -390,8 +400,8 @@
 
         const debouncedUpdate = debounce(() => {
             handleStreamingUpdate();
-            updateImage();
-        }, 200);
+            safeUpdateImage();
+        }, 150);
 
         chatDomObserver = new MutationObserver((mutations) => {
             debouncedUpdate();
@@ -424,11 +434,8 @@
 
     function getCharacterNameFromDOM() {
         const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
-        
-        // ユーザー名（除外対象）
         const userName = (context && (context.name1 || context.user_name)) || 'ユーザー';
 
-        // 1. SillyTavernのコンテキストからAIキャラ名を取得
         if (context && context.character && context.character.name && context.character.name !== userName) {
             return context.character.name;
         }
@@ -438,7 +445,6 @@
             if (cName && cName !== userName) return cName;
         }
 
-        // 2. DOMからの取得（ユーザー名を除外）
         const selectedOption = document.querySelector('#character_select option:checked, select[name="character"] option:checked');
         if (selectedOption && selectedOption.textContent.trim()) {
             const val = selectedOption.textContent.trim();
@@ -451,7 +457,6 @@
             if (val !== userName) return val;
         }
 
-        // Right_nav_kai などの拡張UIから検出
         const navBlock = document.querySelector('.right-nav-char-block[data-name]');
         if (navBlock && navBlock.dataset && navBlock.dataset.name) {
             const val = navBlock.dataset.name;
@@ -467,12 +472,11 @@
         if (!charName) {
             if (currentImageMap === defaultImageMap) {
                 currentImageMap = await detectImageMapExtensions(defaultImageMap);
-                updateImage();
+                safeUpdateImage();
             }
             return;
         }
 
-        // 同一キャラかつマップ構築済みで、手動更新でない場合はスキップ
         if (!forceRefresh && currentCharacter === charName && currentImageMap !== defaultImageMap) {
             return;
         }
@@ -482,7 +486,7 @@
 
         if (!forceRefresh && imageMapCache.has(charName)) {
             currentImageMap = imageMapCache.get(charName);
-            updateImage();
+            safeUpdateImage();
             return;
         }
 
@@ -512,7 +516,7 @@
             console.warn(`⚠ ${charName} の拡張設定が見つかりませんでした。デフォルト画像を使用します。`);
             currentImageMap = await detectImageMapExtensions(defaultImageMap);
         }
-        updateImage();
+        safeUpdateImage();
     }
 
     // --- カスタムウィンドウの制御 ---
@@ -817,8 +821,8 @@
                 };
 
                 safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
-                safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, handleStreamingUpdate);
-                safeOn(eventTypes.USER_MESSAGE_RENDERED, updateImage);
+                safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, safeUpdateImage);
+                safeOn(eventTypes.USER_MESSAGE_RENDERED, safeUpdateImage);
 
                 const onCharacterOrChatChanged = () => {
                     loadCharacterData(true);
@@ -837,7 +841,6 @@
     loadCharacterData(true);
     setupChatDomObserver();
 
-    // 初期化直後の数秒間はキャラ検出を定期巡回して追従
     let pollCount = 0;
     const initialPoll = setInterval(() => {
         loadCharacterData();
