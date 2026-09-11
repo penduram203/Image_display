@@ -6,7 +6,7 @@ function initImageDisplay() {
     // --- デフォルト値とグローバル変数の定義 ---
     const DEFAULT_WIDTH = 300, DEFAULT_HEIGHT = 200, DEFAULT_LEFT = 100, DEFAULT_TOP = 100, DEFAULT_BG_COLOR = '#000000';
     const defaultImageMap = { "default": "addchara/default" };
-    let currentCharacter = null, currentImageMap = defaultImageMap, currentImageUrl = currentImageMap.default;
+    let currentCharacter = null, currentImageMap = defaultImageMap, currentImageUrl = null;
     let currentMode = 'normal', preNormalState = { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, left: DEFAULT_LEFT, top: DEFAULT_TOP };
     let isDragging = false, isResizing = false, offsetX, offsetY, isCustomWindowOpen = false;
     const imageMapCache = new Map();
@@ -26,7 +26,7 @@ function initImageDisplay() {
         };
     }
 
-    // --- 拡張子自動検出関数（動画対応） ---
+    // --- 拡張子自動検出関数（動画・画像対応） ---
     const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp', 'mp4', 'webm'];
 
     function isVideoUrl(url) {
@@ -250,6 +250,10 @@ function initImageDisplay() {
         const keywordMedia = findLastKeywordImage();
         let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
 
+        if (!newUrl || typeof newUrl !== 'string' || newUrl.trim() === '') {
+            return;
+        }
+
         if (currentImageUrl !== newUrl || mediaContainer.children.length === 0) {
             console.log(`🖼 メディアを更新: ${newUrl}`);
             currentImageUrl = newUrl;
@@ -376,7 +380,7 @@ function initImageDisplay() {
         return null;
     }
 
-    async function loadCharacterData() {
+    async function loadCharacterData(forceRefresh = false) {
         const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
         let charName = null;
 
@@ -393,14 +397,14 @@ function initImageDisplay() {
             return;
         }
 
-        if (currentCharacter === charName && currentImageMap !== defaultImageMap) {
+        if (!forceRefresh && currentCharacter === charName && currentImageMap !== defaultImageMap) {
             return;
         }
 
         currentCharacter = charName;
         console.log(`👤 キャラクター検出: ${charName}`);
 
-        if (imageMapCache.has(charName)) {
+        if (!forceRefresh && imageMapCache.has(charName)) {
             currentImageMap = imageMapCache.get(charName);
             updateImage();
             return;
@@ -426,7 +430,9 @@ function initImageDisplay() {
             const detectedMap = await detectImageMapExtensions(loadedMap);
             currentImageMap = detectedMap;
             imageMapCache.set(charName, detectedMap);
+            console.log(`✅ キャラクター設定マップをロードしました:`, currentImageMap);
         } else {
+            console.warn(`⚠ ${charName} の拡張設定が見つかりませんでした。デフォルト画像を使用します。`);
             currentImageMap = await detectImageMapExtensions(defaultImageMap);
         }
         updateImage();
@@ -720,14 +726,13 @@ function initImageDisplay() {
         }
     });
 
-    // --- SillyTavern EventSource イベント安全化登録（修正箇所） ---
+    // --- EventSource 安全監視 ---
     function setupEventSourceListeners() {
         if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
             const context = SillyTavern.getContext();
             if (context && context.eventSource && context.eventTypes) {
                 const { eventSource, eventTypes } = context;
 
-                // 安全にリスナー登録を行うヘルパー
                 const safeOn = (eventType, handler) => {
                     if (eventType && typeof eventSource.on === 'function') {
                         eventSource.on(eventType, handler);
@@ -739,7 +744,7 @@ function initImageDisplay() {
                 safeOn(eventTypes.USER_MESSAGE_RENDERED, updateImage);
 
                 const onCharacterOrChatChanged = () => {
-                    loadCharacterData();
+                    loadCharacterData(true);
                 };
 
                 safeOn(eventTypes.CHAT_CHANGED, onCharacterOrChatChanged);
@@ -750,14 +755,13 @@ function initImageDisplay() {
         }
     }
 
-    // --- 初期ロードと定期監視の設定 ---
+    // --- 初期ロード ---
     setupEventSourceListeners();
     loadCharacterData();
     setupChatDomObserver();
-    setInterval(loadCharacterData, 2000);
+    setInterval(() => loadCharacterData(), 3000);
 }
 
-// DOMコンテンツロード時または動的読み込み時の初期化
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initImageDisplay);
 } else {
