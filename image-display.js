@@ -6,8 +6,11 @@ function initImageDisplay() {
     // --- デフォルト値とグローバル変数の定義 ---
     const DEFAULT_WIDTH = 300, DEFAULT_HEIGHT = 200, DEFAULT_LEFT = 100, DEFAULT_TOP = 100, DEFAULT_BG_COLOR = '#000000';
     const defaultImageMap = { "default": "addchara/default" };
-    let currentCharacter = null, currentImageMap = defaultImageMap, currentImageUrl = null;
-    let currentMode = 'normal', preNormalState = { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, left: DEFAULT_LEFT, top: DEFAULT_TOP };
+    let currentCharacter = null;
+    let currentImageMap = defaultImageMap;
+    let currentImageUrl = null;
+    let currentMode = 'normal';
+    let preNormalState = { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, left: DEFAULT_LEFT, top: DEFAULT_TOP };
     let isDragging = false, isResizing = false, offsetX, offsetY, isCustomWindowOpen = false;
     const imageMapCache = new Map();
     let isDefaultImageFailed = false;
@@ -373,30 +376,43 @@ function initImageDisplay() {
     }
 
     function getCharacterNameFromDOM() {
-        const nameEl = document.querySelector('#character_name_holder') || document.querySelector('#character_name_id') || document.querySelector('.character_name');
+        // SillyTavernの各種UIコンポーネントからキャラ名を多角的に探索
+        const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
+        if (context && context.character && context.character.name) {
+            return context.character.name;
+        }
+
+        const selectedOption = document.querySelector('#character_select option:checked, select[name="character"] option:checked');
+        if (selectedOption && selectedOption.textContent.trim()) {
+            return selectedOption.textContent.trim();
+        }
+
+        const nameEl = document.querySelector('#character_name_holder, #character_name_id, .character_name, .ch_name');
         if (nameEl && nameEl.textContent.trim()) {
             return nameEl.textContent.trim();
         }
+
+        // 右ナビパネル等（Right_nav_kai）から検出
+        const navBlock = document.querySelector('.right-nav-char-block, .character_select');
+        if (navBlock && navBlock.dataset && navBlock.dataset.name) {
+            return navBlock.dataset.name;
+        }
+
         return null;
     }
 
     async function loadCharacterData(forceRefresh = false) {
-        const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
-        let charName = null;
-
-        if (context && context.character) {
-            charName = context.character.name;
-        }
-        if (!charName) {
-            charName = getCharacterNameFromDOM();
-        }
+        const charName = getCharacterNameFromDOM();
 
         if (!charName) {
-            currentImageMap = await detectImageMapExtensions(defaultImageMap);
-            updateImage();
+            if (currentImageMap === defaultImageMap) {
+                currentImageMap = await detectImageMapExtensions(defaultImageMap);
+                updateImage();
+            }
             return;
         }
 
+        // 同一キャラかつマップ構築済みで、手動更新でない場合はスキップ
         if (!forceRefresh && currentCharacter === charName && currentImageMap !== defaultImageMap) {
             return;
         }
@@ -422,6 +438,7 @@ function initImageDisplay() {
             console.warn(`[Image Display] ${charName}_ext.json の読み込みをスキップ:`, e);
         }
 
+        const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
         if (!loadedMap && context && context.character && context.character.data) {
             loadedMap = findImageMapInData(context.character.data);
         }
@@ -430,7 +447,7 @@ function initImageDisplay() {
             const detectedMap = await detectImageMapExtensions(loadedMap);
             currentImageMap = detectedMap;
             imageMapCache.set(charName, detectedMap);
-            console.log(`✅ キャラクター設定マップをロードしました:`, currentImageMap);
+            console.log(`✅ キャラクター設定マップをロードしました (${charName}):`, currentImageMap);
         } else {
             console.warn(`⚠ ${charName} の拡張設定が見つかりませんでした。デフォルト画像を使用します。`);
             currentImageMap = await detectImageMapExtensions(defaultImageMap);
@@ -755,11 +772,18 @@ function initImageDisplay() {
         }
     }
 
-    // --- 初期ロード ---
+    // --- 初期ロードとポーリング ---
     setupEventSourceListeners();
-    loadCharacterData();
+    loadCharacterData(true);
     setupChatDomObserver();
-    setInterval(() => loadCharacterData(), 3000);
+
+    // 初期化直後の数秒間はキャラ検出を定期巡回して追従
+    let pollCount = 0;
+    const initialPoll = setInterval(() => {
+        loadCharacterData();
+        pollCount++;
+        if (pollCount > 10) clearInterval(initialPoll);
+    }, 1000);
 }
 
 if (document.readyState === 'loading') {
