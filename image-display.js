@@ -36,11 +36,11 @@ function initImageDisplay() {
     }
 
     // --- 拡張子自動検出関数 ---
-    const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp'];
+    const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp', 'mp4'];
 
     async function detectImageExtension(imagePath) {
         if (!imagePath) return null;
-        if (imagePath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp)$/i)) {
+        if (imagePath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4)$/i)) {
             return imagePath;
         }
         for (const ext of ALLOWED_EXTENSIONS) {
@@ -453,7 +453,7 @@ function initImageDisplay() {
     // 画像エラーハンドラー
     imgElement.onerror = async function() {
         console.error("画像の読み込みに失敗しました:", this.src);
-        if (this.src && !this.src.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp)$/i)) {
+        if (this.src && !this.src.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4)$/i)) {
             console.log("🔄 拡張子自動検出を試みます:", this.src);
             const detectedPath = await detectImageExtension(this.src);
             if (detectedPath) {
