@@ -24,6 +24,17 @@ function initImageDisplay() {
     let lastStreamingText = '';
     const STREAMING_DELAY = 1000;
 
+    let chatDomObserver = null;
+
+    // デバウンス処理（MutationObserverの連続発火をまとめるため）
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => func(...args), wait);
+        };
+    }
+
     // --- 拡張子自動検出関数 ---
     const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp'];
 
@@ -806,7 +817,43 @@ function initImageDisplay() {
         }
     }
 
+    // --- チャット欄のDOM変化を直接監視（メッセージ削除の検知用） ---
+    // CHARACTER_MESSAGE_RENDERED / USER_MESSAGE_RENDERED はメッセージが
+    // 「追加」された時にしか発火せず、メッセージが削除された時には何のイベントも
+    // 発火しないため、削除後は末尾のメッセージが変わっても画像が更新されなかった。
+    // #chat 自体を MutationObserver で監視し、子要素の追加・削除どちらが起きても
+    // （＝チャット内容が変化した時は常に）最新のキーワードに基づいて画像を再判定する。
+    function setupChatDomObserver() {
+        const chatElement = document.getElementById('chat');
+        if (!chatElement) {
+            // #chat がまだDOMに存在しない場合は少し待って再試行
+            setTimeout(setupChatDomObserver, 1000);
+            return;
+        }
+
+        if (chatDomObserver) {
+            chatDomObserver.disconnect();
+        }
+
+        const debouncedReevaluate = debounce(() => {
+            // ストリーミング中のテキスト比較キャッシュをリセットし、
+            // 削除後に同じ内容のメッセージが残っていても正しく再評価されるようにする
+            lastStreamingText = '';
+            updateImage();
+        }, 150);
+
+        chatDomObserver = new MutationObserver((mutations) => {
+            const hasRelevantChange = mutations.some(m => m.type === 'childList' && (m.addedNodes.length > 0 || m.removedNodes.length > 0));
+            if (hasRelevantChange) {
+                debouncedReevaluate();
+            }
+        });
+        chatDomObserver.observe(chatElement, { childList: true, subtree: true });
+        console.log('✅ チャット欄のDOM変化監視（メッセージ削除の検知）を開始しました。');
+    }
+
     setupEventSourceListeners();
+    setupChatDomObserver();
 }
 
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
