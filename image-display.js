@@ -17,7 +17,7 @@ function initImageDisplay() {
     const STREAMING_DELAY = 1000;
     let chatDomObserver = null;
 
-    // デバウンス処理（MutationObserverの連続発火をまとめるため）
+    // デバウンス処理
     function debounce(func, wait) {
         let timeout;
         return function executedFunction(...args) {
@@ -30,7 +30,7 @@ function initImageDisplay() {
     const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp', 'mp4', 'webm'];
 
     function isVideoUrl(url) {
-        if (!url) return false;
+        if (!url || typeof url !== 'string') return false;
         return !!url.match(/\.(mp4|webm)$/i);
     }
 
@@ -53,6 +53,7 @@ function initImageDisplay() {
 
     function checkMediaExists(mediaUrl) {
         return new Promise((resolve) => {
+            if (!mediaUrl) return resolve(false);
             if (isVideoUrl(mediaUrl)) {
                 const video = document.createElement('video');
                 video.onloadedmetadata = () => resolve(true);
@@ -107,7 +108,7 @@ function initImageDisplay() {
     colorPicker.title = '背景色を変更';
     header.appendChild(colorPicker);
 
-    // メディア表示用要素コンテナ
+    // メディア表示用コンテナ
     const mediaContainer = document.createElement('div');
     mediaContainer.id = 'media-element-container';
     mediaContainer.style.width = '100%';
@@ -149,7 +150,7 @@ function initImageDisplay() {
     halfMaximizeButton.classList.add('enabled');
     controlContainer.appendChild(halfMaximizeButton);
 
-    // カスタム設定ウィンドウの作成
+    // カスタム設定ウィンドウ
     const customWindow = document.createElement('div');
     customWindow.id = 'custom-window';
     customWindow.innerHTML = `
@@ -162,7 +163,7 @@ function initImageDisplay() {
     `;
     document.body.appendChild(customWindow);
 
-    // --- 条件評価・キーワード処理ロジック ---
+    // --- 条件評価・キーワードロジック ---
     function evaluateBasicCondition(condStr, text) {
         let trimmed = condStr.trim();
         if (!trimmed) return false;
@@ -243,16 +244,16 @@ function initImageDisplay() {
         return null;
     }
 
-    // --- メディア更新処理（動画 / 画像対応） ---
+    // --- メディア表示更新処理 ---
     function updateImage() {
         if (isDefaultImageFailed) return;
         const keywordMedia = findLastKeywordImage();
         let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
 
-        if (currentImageUrl !== newUrl) {
+        if (currentImageUrl !== newUrl || mediaContainer.children.length === 0) {
             console.log(`🖼 メディアを更新: ${newUrl}`);
             currentImageUrl = newUrl;
-            mediaContainer.innerHTML = ''; // コンテナ内をクリア
+            mediaContainer.innerHTML = '';
 
             if (isVideoUrl(newUrl)) {
                 const videoElement = document.createElement('video');
@@ -289,7 +290,7 @@ function initImageDisplay() {
                 return;
             }
         }
-        if (src.match(/default\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i) || src.endsWith('/default')) {
+        if (src && (src.match(/default\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i) || src.endsWith('/default'))) {
             isDefaultImageFailed = true;
             console.warn("⚠ デフォルトメディアが見つかりません。表示を無効化します");
             mediaContainer.style.display = 'none';
@@ -312,7 +313,7 @@ function initImageDisplay() {
     }
     textModeButton.addEventListener('click', toggleTextMode);
 
-    // --- ストリーミング応答の監視処理 ---
+    // --- ストリーミング監視 ---
     function handleStreamingUpdate() {
         if (currentTextMode !== 'ai') return;
         const lastAiMessage = document.querySelector('.mes[is_user="false"]:last-child .mes_text');
@@ -349,7 +350,7 @@ function initImageDisplay() {
         });
     }
 
-    // --- キャラクターデータの読み込み・判定 ---
+    // --- キャラクターデータの読み込み ---
     function findImageMapInData(data) {
         if (data === null || typeof data !== 'object') return null;
         if (data.hasOwnProperty('image_display_extension')) {
@@ -368,7 +369,7 @@ function initImageDisplay() {
     }
 
     function getCharacterNameFromDOM() {
-        const nameEl = document.querySelector('#character_name_id') || document.querySelector('.character_name');
+        const nameEl = document.querySelector('#character_name_holder') || document.querySelector('#character_name_id') || document.querySelector('.character_name');
         if (nameEl && nameEl.textContent.trim()) {
             return nameEl.textContent.trim();
         }
@@ -387,7 +388,7 @@ function initImageDisplay() {
         }
 
         if (!charName) {
-            currentImageMap = defaultImageMap;
+            currentImageMap = await detectImageMapExtensions(defaultImageMap);
             updateImage();
             return;
         }
@@ -426,7 +427,7 @@ function initImageDisplay() {
             currentImageMap = detectedMap;
             imageMapCache.set(charName, detectedMap);
         } else {
-            currentImageMap = defaultImageMap;
+            currentImageMap = await detectImageMapExtensions(defaultImageMap);
         }
         updateImage();
     }
@@ -515,7 +516,6 @@ function initImageDisplay() {
                             context.saveSettingsDebounced();
                         }
                         localStorage.removeItem(OLD_STORAGE_KEY);
-                        console.log('[Image Display] localStorage から extensionSettings に移行しました。');
                     }
                 } catch (e) {
                     console.error('[Image Display] 旧データの移行に失敗しました:', e);
@@ -720,26 +720,38 @@ function initImageDisplay() {
         }
     });
 
-    // --- SillyTavern イベント連携の登録 ---
-    if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
-        const context = SillyTavern.getContext();
-        if (context.eventSource) {
-            context.eventSource.on(context.eventTypes.CHARACTER_SELECTED, () => {
-                loadCharacterData();
-            });
-            context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
-                loadCharacterData();
-            });
-            context.eventSource.on(context.eventTypes.CHARACTER_MESSAGE_RENDERED, () => {
-                updateImage();
-            });
-            context.eventSource.on(context.eventTypes.USER_MESSAGE_RENDERED, () => {
-                updateImage();
-            });
+    // --- SillyTavern EventSource イベント安全化登録（修正箇所） ---
+    function setupEventSourceListeners() {
+        if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
+            const context = SillyTavern.getContext();
+            if (context && context.eventSource && context.eventTypes) {
+                const { eventSource, eventTypes } = context;
+
+                // 安全にリスナー登録を行うヘルパー
+                const safeOn = (eventType, handler) => {
+                    if (eventType && typeof eventSource.on === 'function') {
+                        eventSource.on(eventType, handler);
+                    }
+                };
+
+                safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
+                safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, handleStreamingUpdate);
+                safeOn(eventTypes.USER_MESSAGE_RENDERED, updateImage);
+
+                const onCharacterOrChatChanged = () => {
+                    loadCharacterData();
+                };
+
+                safeOn(eventTypes.CHAT_CHANGED, onCharacterOrChatChanged);
+                safeOn(eventTypes.CHARACTER_SELECTED, onCharacterOrChatChanged);
+
+                console.log("✅ SillyTavern EventSource による監視を開始しました。");
+            }
         }
     }
 
     // --- 初期ロードと定期監視の設定 ---
+    setupEventSourceListeners();
     loadCharacterData();
     setupChatDomObserver();
     setInterval(loadCharacterData, 2000);
