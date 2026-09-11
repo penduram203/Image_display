@@ -1,6 +1,6 @@
-import { getContext } from '/script.js';
-import { extension_settings, saveSettingsDebounced } from '/extensions.js';
-import { ALLOWED_ES-TENSIONS, checkImageExists, detectImageExtension } from '../stj_editor/stj-common.js';
+import { getContext } from '../../../../script.js';
+import { extension_settings, saveSettingsDebounced } from '../../../../extensions.js';
+import { ALLOWED_EXTENSIONS, checkImageExists, detectImageExtension } from '../stj_editor/stj-common.js';
 
 function initImageDisplay() {
     console.log("Image Display: 初期化を開始します。");
