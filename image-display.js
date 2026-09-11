@@ -281,7 +281,7 @@
         return null;
     }
 
-    // --- メディア表示更新処理 ---
+    // --- メディア表示更新処理（チラつき防止修正版） ---
     async function updateImage() {
         if (isDefaultImageFailed) return;
         const keywordMedia = findLastKeywordImage();
@@ -300,35 +300,47 @@
             }
         }
 
-        if (currentImageUrl !== newUrl || mediaContainer.children.length === 0) {
-            console.log(`🖼 メディアを更新: ${newUrl}`);
-            currentImageUrl = newUrl;
-            mediaContainer.innerHTML = '';
+        // 表示パスが変わらない場合、かつコンテナ内に既にメディアが存在する場合はスキップ
+        if (currentImageUrl === newUrl && mediaContainer.children.length > 0) {
+            return;
+        }
 
-            if (isVideoUrl(newUrl)) {
-                const videoElement = document.createElement('video');
-                videoElement.src = newUrl;
-                videoElement.autoplay = true;
-                videoElement.loop = true;
-                videoElement.muted = true;
-                videoElement.playsInline = true;
-                videoElement.preload = 'auto';
-                videoElement.style.width = '100%';
-                videoElement.style.height = '100%';
-                videoElement.style.objectFit = 'contain';
-                videoElement.onerror = () => handleMediaError(videoElement, newUrl);
-                mediaContainer.appendChild(videoElement);
-                
-                videoElement.play().catch(() => {});
-            } else {
-                const imgElement = document.createElement('img');
-                imgElement.src = newUrl;
-                imgElement.style.width = '100%';
-                imgElement.style.height = '100%';
-                imgElement.style.objectFit = 'contain';
-                imgElement.onerror = () => handleMediaError(imgElement, newUrl);
-                mediaContainer.appendChild(imgElement);
-            }
+        console.log(`🖼 メディアを更新: ${newUrl}`);
+        currentImageUrl = newUrl;
+
+        // 【修正点】画像読み込み中の前画像チラつきを防止するため、描画前にコンテナを一旦空にする
+        mediaContainer.innerHTML = '';
+
+        if (isVideoUrl(newUrl)) {
+            const videoElement = document.createElement('video');
+            videoElement.src = newUrl;
+            videoElement.autoplay = true;
+            videoElement.loop = true;
+            videoElement.muted = true;
+            videoElement.playsInline = true;
+            videoElement.preload = 'auto';
+            videoElement.style.width = '100%';
+            videoElement.style.height = '100%';
+            videoElement.style.objectFit = 'contain';
+            videoElement.onerror = () => handleMediaError(videoElement, newUrl);
+            mediaContainer.appendChild(videoElement);
+            videoElement.play().catch(() => {});
+        } else {
+            // 【修正点】メモリ上でプレロードし、準備完了後にDOMへ挿入することで前画像のチラつきを解消
+            const imgElement = document.createElement('img');
+            imgElement.style.width = '100%';
+            imgElement.style.height = '100%';
+            imgElement.style.objectFit = 'contain';
+
+            imgElement.onload = () => {
+                // プレロード完了時にURLが途中で変わっていなければDOMへ追加
+                if (currentImageUrl === newUrl) {
+                    mediaContainer.innerHTML = '';
+                    mediaContainer.appendChild(imgElement);
+                }
+            };
+            imgElement.onerror = () => handleMediaError(imgElement, newUrl);
+            imgElement.src = newUrl;
         }
     }
 
