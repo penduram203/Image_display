@@ -285,11 +285,16 @@
     async function updateImageWithUrl(targetUrl) {
         if (isDefaultImageFailed) return;
         
-        // 空文字・不正URLを判定して除外
+        // 空文字・不正値の強固なガード（127.0.0.1:8000 への不正リクエストを防ぐ）
         if (!targetUrl || typeof targetUrl !== 'string' || !targetUrl.trim()) {
-            console.warn("⚠ 無効なメディアURLが渡されたため、更新をスキップします。");
+            console.warn("⚠ 空または不正なメディアURLのため、デフォルト画像へ安全にフォールバックします。");
+            const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
+            if (fallback && fallback !== targetUrl && typeof fallback === 'string' && fallback.trim()) {
+                await updateImageWithUrl(fallback);
+            }
             return;
         }
+
         let newUrl = targetUrl.trim();
 
         if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
@@ -376,7 +381,7 @@
             mediaContainer.style.display = 'none';
         } else {
             const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
-            if (fallback && fallback !== src && fallback.trim()) {
+            if (fallback && fallback !== src && typeof fallback === 'string' && fallback.trim()) {
                 element.src = fallback.trim();
                 if (isVideoUrl(fallback) && element.tagName.toLowerCase() === 'video') {
                     element.play().catch(() => {});
@@ -861,7 +866,13 @@
                         sentText = data.message;
                     } else {
                         const inputEl = document.querySelector('#send_textarea');
-                        if (inputEl && inputEl.value) sentText = inputEl.value;
+                        if (inputEl && inputEl.value) {
+                            sentText = inputEl.value;
+                        } else {
+                            // DOMから直前に追加されたユーザーメッセージ要素を取得
+                            const lastUserMsg = document.querySelector('.mes[is_user="true"]:last-child .mes_text');
+                            if (lastUserMsg) sentText = lastUserMsg.textContent || "";
+                        }
                     }
 
                     if (sentText) {
