@@ -20,7 +20,7 @@
     let currentTextMode = 'user'; // 'user' または 'ai'
     let streamingTimer = null;
     let lastStreamingText = '';
-    const STREAMING_DELAY = 500;
+    const STREAMING_DELAY = 100; // 応答性を上げるため遅延を短縮
     let chatDomObserver = null;
 
     // デバウンス処理
@@ -269,7 +269,13 @@
         return null;
     }
 
-    function findLastKeywordImage() {
+    function findLastKeywordImage(overrideText = null) {
+        // 直接テキストが渡された場合は最優先で評価（送信直前/直後のテキスト）
+        if (overrideText) {
+            const mediaUrl = findMatchingImageUrl(overrideText);
+            if (mediaUrl) return mediaUrl;
+        }
+
         const isUserMode = currentTextMode === 'user';
         const selector = `.mes[is_user="${isUserMode}"] .mes_text`;
         const messages = Array.from(document.querySelectorAll(selector));
@@ -281,10 +287,10 @@
         return null;
     }
 
-    // --- メディア表示更新処理（チラつき防止修正版） ---
-    async function updateImage() {
+    // --- メディア表示更新処理（即時更新・前倒し対応版） ---
+    async function updateImage(overrideText = null) {
         if (isDefaultImageFailed) return;
-        const keywordMedia = findLastKeywordImage();
+        const keywordMedia = findLastKeywordImage(overrideText);
         let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
 
         if (!newUrl || typeof newUrl !== 'string' || newUrl.trim() === '') {
@@ -305,10 +311,10 @@
             return;
         }
 
-        console.log(`🖼 メディアを更新: ${newUrl}`);
+        console.log(`🖼 メディアを更新 (前倒しトリガー): ${newUrl}`);
         currentImageUrl = newUrl;
 
-        // 【修正点】画像読み込み中の前画像チラつきを防止するため、描画前にコンテナを一旦空にする
+        // 描画前にコンテナを一旦空にして切り替え準備
         mediaContainer.innerHTML = '';
 
         if (isVideoUrl(newUrl)) {
@@ -326,14 +332,12 @@
             mediaContainer.appendChild(videoElement);
             videoElement.play().catch(() => {});
         } else {
-            // 【修正点】メモリ上でプレロードし、準備完了後にDOMへ挿入することで前画像のチラつきを解消
             const imgElement = document.createElement('img');
             imgElement.style.width = '100%';
             imgElement.style.height = '100%';
             imgElement.style.objectFit = 'contain';
 
             imgElement.onload = () => {
-                // プレロード完了時にURLが途中で変わっていなければDOMへ追加
                 if (currentImageUrl === newUrl) {
                     mediaContainer.innerHTML = '';
                     mediaContainer.appendChild(imgElement);
@@ -344,11 +348,45 @@
         }
     }
 
-    // 描画遅延付きで画面を更新する関数
-    function safeUpdateImage() {
-        setTimeout(() => {
-            updateImage();
-        }, 50);
+    // 描画更新の即時呼び出し用関数
+    function safeUpdateImage(overrideText = null) {
+        updateImage(overrideText);
+    }
+
+    // --- 送信直後の前倒し切り替えトリガーの準備 ---
+    function setupFastSubmitTrigger() {
+        const sendButton = document.querySelector('#send_textarea, #send_btn, .send_btn');
+        const sendTextarea = document.querySelector('#send_textarea, textarea');
+
+        const triggerImmediateUpdate = () => {
+            if (currentTextMode !== 'user' || !sendTextarea) return;
+            const text = sendTextarea.value;
+            if (text && text.trim() !== '') {
+                console.log("⚡ 送信前倒しトリガー検知:", text);
+                safeUpdateImage(text);
+            }
+        };
+
+        if (sendButton) {
+            sendButton.addEventListener('click', triggerImmediateUpdate, { capture: true });
+        }
+
+        if (sendTextarea) {
+            sendTextarea.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    triggerImmediateUpdate();
+                }
+            }, { capture: true });
+        }
+
+        // SillyTavern EventSource イベントに連動
+        if (typeof eventSource !== 'undefined' && typeof event_types !== 'undefined') {
+            eventSource.on(event_types.USER_MESSAGE_RENDERED || 'user_message_rendered', () => {
+                if (currentTextMode === 'user') {
+                    safeUpdateImage();
+                }
+            });
+        }
     }
 
     async function handleMediaError(element, src) {
@@ -413,7 +451,7 @@
         const debouncedUpdate = debounce(() => {
             handleStreamingUpdate();
             safeUpdateImage();
-        }, 150);
+        }, 100);
 
         chatDomObserver = new MutationObserver((mutations) => {
             debouncedUpdate();
@@ -819,44 +857,9 @@
         }
     });
 
-    // --- EventSource 安全監視 ---
-    function setupEventSourceListeners() {
-        if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
-            const context = SillyTavern.getContext();
-            if (context && context.eventSource && context.eventTypes) {
-                const { eventSource, eventTypes } = context;
-
-                const safeOn = (eventType, handler) => {
-                    if (eventType && typeof eventSource.on === 'function') {
-                        eventSource.on(eventType, handler);
-                    }
-                };
-
-                safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
-                safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, safeUpdateImage);
-                safeOn(eventTypes.USER_MESSAGE_RENDERED, safeUpdateImage);
-
-                const onCharacterOrChatChanged = () => {
-                    loadCharacterData(true);
-                };
-
-                safeOn(eventTypes.CHAT_CHANGED, onCharacterOrChatChanged);
-                safeOn(eventTypes.CHARACTER_SELECTED, onCharacterOrChatChanged);
-
-                console.log("✅ SillyTavern EventSource による監視を開始しました。");
-            }
-        }
-    }
-
-    // --- 初期ロードとポーリング ---
-    setupEventSourceListeners();
-    loadCharacterData(true);
+    // 初期化と各トリガーの適用
+    setupFastSubmitTrigger();
     setupChatDomObserver();
+    loadCharacterData();
 
-    let pollCount = 0;
-    const initialPoll = setInterval(() => {
-        loadCharacterData();
-        pollCount++;
-        if (pollCount > 10) clearInterval(initialPoll);
-    }, 1000);
 })();
