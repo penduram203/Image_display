@@ -16,11 +16,10 @@
     let preNormalState = { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, left: DEFAULT_LEFT, top: DEFAULT_TOP };
     let isDragging = false, isResizing = false, offsetX, offsetY, isCustomWindowOpen = false;
     const imageMapCache = new Map();
-    let isDefaultImageFailed = false;
     let currentTextMode = 'user'; // 'user' または 'ai'
     let streamingTimer = null;
     let lastStreamingText = '';
-    const STREAMING_DELAY = 100; // 応答性を上げるため遅延を短縮
+    const STREAMING_DELAY = 100;
     let chatDomObserver = null;
 
     // デバウンス処理
@@ -33,32 +32,13 @@
     }
 
     // --- 拡張子自動検出関数（動画・画像対応） ---
-    const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp', 'mp4', 'webm'];
+    const ALLOWED_EXTENSIONS = ['mp4', 'webm', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp'];
 
     function isVideoUrl(url) {
         if (!url || typeof url !== 'string') return false;
         return !!url.match(/\.(mp4|webm)$/i);
     }
 
-    async function detectImageExtension(imagePath) {
-        if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
-        const cleanPath = imagePath.trim();
-        if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            return cleanPath;
-        }
-        for (const ext of ALLOWED_EXTENSIONS) {
-            const imagePathWithExt = `${cleanPath}.${ext}`;
-            const exists = await checkMediaExists(imagePathWithExt);
-            if (exists) {
-                console.log(`✅ 拡張子自動検出: ${imagePathWithExt}`);
-                return imagePathWithExt;
-            }
-        }
-        console.warn(`⚠ メディアが見つかりません: ${cleanPath}`);
-        return null;
-    }
-
-    // 高速チェック＆キャッシュ付きメディア確認
     function checkMediaExists(mediaUrl) {
         if (mediaExistsCache.has(mediaUrl)) {
             return Promise.resolve(mediaExistsCache.get(mediaUrl));
@@ -98,6 +78,24 @@
         });
     }
 
+    async function detectImageExtension(imagePath) {
+        if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
+        const cleanPath = imagePath.trim();
+        if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
+            return cleanPath;
+        }
+        for (const ext of ALLOWED_EXTENSIONS) {
+            const imagePathWithExt = `${cleanPath}.${ext}`;
+            const exists = await checkMediaExists(imagePathWithExt);
+            if (exists) {
+                console.log(`✅ 拡張子自動検出成功: ${imagePathWithExt}`);
+                return imagePathWithExt;
+            }
+        }
+        console.warn(`⚠ メディアが存在しません: ${cleanPath}`);
+        return null;
+    }
+
     async function detectImageMapExtensions(imageMap) {
         if (!imageMap) return imageMap;
         const detectedMap = {};
@@ -128,7 +126,7 @@
 
     const header = document.createElement('div');
     header.id = 'image-display-header';
-    header.textContent = 'メディア表示エリア (ドラッグで移動)';
+    header.textContent = 'メディア表示エリア';
     imageContainer.appendChild(header);
 
     const colorPicker = document.createElement('input');
@@ -203,7 +201,6 @@
             trimmed = trimmed.substring(4).trim();
         }
         
-        // カンマ区切りによるOR評価に対応 (例: "www,ttt")
         const terms = trimmed.split(',').map(t => t.trim()).filter(t => t);
         const matches = terms.some(term => text.toLowerCase().includes(term.toLowerCase()));
         
@@ -270,7 +267,6 @@
     }
 
     function findLastKeywordImage(overrideText = null) {
-        // 直接テキストが渡された場合は最優先で評価（送信直前/直後のテキスト）
         if (overrideText) {
             const mediaUrl = findMatchingImageUrl(overrideText);
             if (mediaUrl) return mediaUrl;
@@ -287,9 +283,8 @@
         return null;
     }
 
-    // --- メディア表示更新処理（即時更新・前倒し対応版） ---
+    // --- メディア表示更新処理 ---
     async function updateImage(overrideText = null) {
-        if (isDefaultImageFailed) return;
         const keywordMedia = findLastKeywordImage(overrideText);
         let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
 
@@ -298,7 +293,6 @@
         }
         newUrl = newUrl.trim();
 
-        // 拡張子が含まれていない場合は自動検出を実施
         if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             const detected = await detectImageExtension(newUrl);
             if (detected) {
@@ -306,15 +300,12 @@
             }
         }
 
-        // 表示パスが変わらない場合、かつコンテナ内に既にメディアが存在する場合はスキップ
         if (currentImageUrl === newUrl && mediaContainer.children.length > 0) {
             return;
         }
 
-        console.log(`🖼 メディアを更新 (前倒しトリガー): ${newUrl}`);
+        console.log(`🖼 メディアを更新: ${newUrl}`);
         currentImageUrl = newUrl;
-
-        // 描画前にコンテナを一旦空にして切り替え準備
         mediaContainer.innerHTML = '';
 
         if (isVideoUrl(newUrl)) {
@@ -328,32 +319,23 @@
             videoElement.style.width = '100%';
             videoElement.style.height = '100%';
             videoElement.style.objectFit = 'contain';
-            videoElement.onerror = () => handleMediaError(videoElement, newUrl);
             mediaContainer.appendChild(videoElement);
-            videoElement.play().catch(() => {});
+            videoElement.play().catch(e => console.warn("動画再生制限:", e));
         } else {
             const imgElement = document.createElement('img');
             imgElement.style.width = '100%';
             imgElement.style.height = '100%';
             imgElement.style.objectFit = 'contain';
-
-            imgElement.onload = () => {
-                if (currentImageUrl === newUrl) {
-                    mediaContainer.innerHTML = '';
-                    mediaContainer.appendChild(imgElement);
-                }
-            };
-            imgElement.onerror = () => handleMediaError(imgElement, newUrl);
             imgElement.src = newUrl;
+            mediaContainer.appendChild(imgElement);
         }
     }
 
-    // 描画更新の即時呼び出し用関数
     function safeUpdateImage(overrideText = null) {
         updateImage(overrideText);
     }
 
-    // --- 送信直後の前倒し切り替えトリガーの準備 ---
+    // --- 送信直後の前倒しトリガーの準備 ---
     function setupFastSubmitTrigger() {
         const sendButton = document.querySelector('#send_textarea, #send_btn, .send_btn');
         const sendTextarea = document.querySelector('#send_textarea, textarea');
@@ -379,40 +361,20 @@
             }, { capture: true });
         }
 
-        // SillyTavern EventSource イベントに連動
         if (typeof eventSource !== 'undefined' && typeof event_types !== 'undefined') {
             eventSource.on(event_types.USER_MESSAGE_RENDERED || 'user_message_rendered', () => {
                 if (currentTextMode === 'user') {
                     safeUpdateImage();
                 }
             });
-        }
-    }
 
-    async function handleMediaError(element, src) {
-        console.error("メディアの読み込みに失敗しました:", src);
-        if (src && !src.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            const detectedPath = await detectImageExtension(src);
-            if (detectedPath) {
-                element.src = detectedPath;
-                if (isVideoUrl(detectedPath) && element.tagName.toLowerCase() === 'video') {
-                    element.play().catch(() => {});
-                }
-                return;
-            }
-        }
-        if (src && (src.match(/default\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i) || src.endsWith('/default'))) {
-            isDefaultImageFailed = true;
-            console.warn("⚠ デフォルトメディアが見つかりません。表示を無効化します");
-            mediaContainer.style.display = 'none';
-        } else {
-            const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
-            if (fallback && fallback !== src) {
-                element.src = fallback;
-                if (isVideoUrl(fallback) && element.tagName.toLowerCase() === 'video') {
-                    element.play().catch(() => {});
-                }
-            }
+            // キャラクター変更・チャットロード時の同期イベントを追加
+            eventSource.on(event_types.CHAT_CHANGED || 'chat_changed', () => {
+                setTimeout(() => loadCharacterData(true), 200);
+            });
+            eventSource.on(event_types.CHARACTER_LOADED || 'character_loaded', () => {
+                setTimeout(() => loadCharacterData(true), 200);
+            });
         }
     }
 
@@ -453,7 +415,7 @@
             safeUpdateImage();
         }, 100);
 
-        chatDomObserver = new MutationObserver((mutations) => {
+        chatDomObserver = new MutationObserver(() => {
             debouncedUpdate();
         });
 
@@ -520,10 +482,8 @@
         const charName = getCharacterNameFromDOM();
 
         if (!charName) {
-            if (currentImageMap === defaultImageMap) {
-                currentImageMap = await detectImageMapExtensions(defaultImageMap);
-                safeUpdateImage();
-            }
+            currentImageMap = await detectImageMapExtensions(defaultImageMap);
+            safeUpdateImage();
             return;
         }
 
@@ -860,6 +820,10 @@
     // 初期化と各トリガーの適用
     setupFastSubmitTrigger();
     setupChatDomObserver();
-    loadCharacterData();
+    
+    // 遅延呼び出しによりキャラクターコンテキストのロード完了を確実に待ち受ける
+    setTimeout(() => {
+        loadCharacterData(true);
+    }, 500);
 
 })();
