@@ -114,6 +114,10 @@ const mediaContainer = document.createElement('div');
 mediaContainer.id = 'media-element-container';
 mediaContainer.style.width = '100%';
 mediaContainer.style.height = 'calc(100% - 30px)';
+mediaContainer.style.display = 'flex';
+mediaContainer.style.alignItems = 'center';
+mediaContainer.style.justifyContent = 'center';
+mediaContainer.style.overflow = 'hidden';
 imageContainer.appendChild(mediaContainer);
 
 const resizeHandle = document.createElement('div');
@@ -262,11 +266,9 @@ function findLastKeywordImage() {
 }
 
 // --- メディア表示更新処理 ---
-// DOMのレンダリング描画待機（DOMズレ対策）を組み込んだ判定・更新処理
 function updateImage() {
     if (isDefaultImageFailed) return;
 
-    // イベント受信直後にDOMの描画を待機（1フレーム + 50ms）して判定を実行
     requestAnimationFrame(() => {
         setTimeout(() => {
             const keywordMedia = findLastKeywordImage();
@@ -280,7 +282,14 @@ function updateImage() {
             if (currentImageUrl !== newUrl || mediaContainer.children.length === 0) {
                 console.log(`🖼 メディアを更新: ${newUrl}`);
                 currentImageUrl = newUrl;
-                mediaContainer.innerHTML = '';
+                
+                // 表示領域の非表示化をクリア
+                mediaContainer.style.display = 'flex';
+
+                // DOM要素のクリア（動画/画像の全削除）
+                while (mediaContainer.firstChild) {
+                    mediaContainer.removeChild(mediaContainer.firstChild);
+                }
 
                 if (isVideoUrl(newUrl)) {
                     const videoElement = document.createElement('video');
@@ -295,7 +304,6 @@ function updateImage() {
                     videoElement.onerror = () => handleMediaError(videoElement, newUrl);
                     mediaContainer.appendChild(videoElement);
                     
-                    // 明示的な即時再生トリガー
                     videoElement.play().catch(e => console.warn('[ImageDisplay] 動画再生の自動トリガー待機:', e));
                 } else {
                     const imgElement = document.createElement('img');
@@ -303,6 +311,7 @@ function updateImage() {
                     imgElement.style.width = '100%';
                     imgElement.style.height = '100%';
                     imgElement.style.objectFit = 'contain';
+                    imgElement.style.display = 'block';
                     imgElement.onerror = () => handleMediaError(imgElement, newUrl);
                     mediaContainer.appendChild(imgElement);
                 }
@@ -402,11 +411,8 @@ function findImageMapInData(data) {
 
 function getCharacterNameFromDOM() {
     const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
-    
-    // ユーザー名（除外対象）
     const userName = (context && (context.name1 || context.user_name)) || 'ユーザー';
 
-    // 1. SillyTavernのコンテキストからAIキャラ名を取得
     if (context && context.character && context.character.name && context.character.name !== userName) {
         return context.character.name;
     }
@@ -416,7 +422,6 @@ function getCharacterNameFromDOM() {
         if (cName && cName !== userName) return cName;
     }
 
-    // 2. DOMからの取得（ユーザー名を除外）
     const selectedOption = document.querySelector('#character_select option:checked, select[name="character"] option:checked');
     if (selectedOption && selectedOption.textContent.trim()) {
         const val = selectedOption.textContent.trim();
@@ -429,7 +434,6 @@ function getCharacterNameFromDOM() {
         if (val !== userName) return val;
     }
 
-    // Right_nav_kai などの拡張UIから検出
     const navBlock = document.querySelector('.right-nav-char-block[data-name]');
     if (navBlock && navBlock.dataset && navBlock.dataset.name) {
         const val = navBlock.dataset.name;
@@ -450,7 +454,6 @@ async function loadCharacterData(forceRefresh = false) {
         return;
     }
 
-    // 同一キャラかつマップ構築済みで、手動更新でない場合はスキップ
     if (!forceRefresh && currentCharacter === charName && currentImageMap !== defaultImageMap) {
         return;
     }
@@ -815,7 +818,6 @@ setupEventSourceListeners();
 loadCharacterData(true);
 setupChatDomObserver();
 
-// 初期化直後の数秒間はキャラ検出を定期巡回して追従
 let pollCount = 0;
 const initialPoll = setInterval(() => {
     loadCharacterData();
