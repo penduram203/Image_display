@@ -32,7 +32,7 @@
         };
     }
 
-    // --- 拡張子・メディア判定関数 ---
+    // --- 拡張子自動検出関数（動画・画像対応） ---
     const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp', 'mp4', 'webm'];
 
     function isVideoUrl(url) {
@@ -40,23 +40,12 @@
         return !!url.match(/\.(mp4|webm)$/i);
     }
 
-    // パスに既に拡張子が含まれているかチェック
-    function hasExtension(path) {
-        if (!path || typeof path !== 'string') return false;
-        return !!path.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i);
-    }
-
-    // 対策A修正点：拡張子指定済みの場合はネットワーク探索を行わずに即返却
     async function detectImageExtension(imagePath) {
         if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
         const cleanPath = imagePath.trim();
-
-        // 拡張子が付いている完全指定の場合は通信せずに即座に採用
-        if (hasExtension(cleanPath)) {
+        if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             return cleanPath;
         }
-
-        // 拡張子がない場合のみ従来通り探索を実施
         for (const ext of ALLOWED_EXTENSIONS) {
             const imagePathWithExt = `${cleanPath}.${ext}`;
             const exists = await checkMediaExists(imagePathWithExt);
@@ -109,7 +98,6 @@
         });
     }
 
-    // 対策A修正点：マップ全体の変換時も完全指定されている項目は高速にスルー
     async function detectImageMapExtensions(imageMap) {
         if (!imageMap) return imageMap;
         const detectedMap = {};
@@ -293,7 +281,7 @@
         return null;
     }
 
-    // --- メディア表示更新処理 ---
+    // --- メディア表示更新処理（チラつき防止修正版） ---
     async function updateImage() {
         if (isDefaultImageFailed) return;
         const keywordMedia = findLastKeywordImage();
@@ -304,8 +292,8 @@
         }
         newUrl = newUrl.trim();
 
-        // 拡張子が含まれていない場合のみ自動検出を実施（完全指定の場合はスルー）
-        if (!hasExtension(newUrl)) {
+        // 拡張子が含まれていない場合は自動検出を実施
+        if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             const detected = await detectImageExtension(newUrl);
             if (detected) {
                 newUrl = detected;
@@ -320,7 +308,7 @@
         console.log(`🖼 メディアを更新: ${newUrl}`);
         currentImageUrl = newUrl;
 
-        // 描画前にコンテナを一旦空にする
+        // 【修正点】画像読み込み中の前画像チラつきを防止するため、描画前にコンテナを一旦空にする
         mediaContainer.innerHTML = '';
 
         if (isVideoUrl(newUrl)) {
@@ -338,12 +326,14 @@
             mediaContainer.appendChild(videoElement);
             videoElement.play().catch(() => {});
         } else {
+            // 【修正点】メモリ上でプレロードし、準備完了後にDOMへ挿入することで前画像のチラつきを解消
             const imgElement = document.createElement('img');
             imgElement.style.width = '100%';
             imgElement.style.height = '100%';
             imgElement.style.objectFit = 'contain';
 
             imgElement.onload = () => {
+                // プレロード完了時にURLが途中で変わっていなければDOMへ追加
                 if (currentImageUrl === newUrl) {
                     mediaContainer.innerHTML = '';
                     mediaContainer.appendChild(imgElement);
@@ -363,7 +353,7 @@
 
     async function handleMediaError(element, src) {
         console.error("メディアの読み込みに失敗しました:", src);
-        if (src && !hasExtension(src)) {
+        if (src && !src.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             const detectedPath = await detectImageExtension(src);
             if (detectedPath) {
                 element.src = detectedPath;
@@ -829,38 +819,44 @@
         }
     });
 
-    // --- SillyTavernイベント初期化処理 ---
-    function initSillyTavernEvents() {
-        if (typeof SillyTavern === 'undefined' || !SillyTavern.eventSource) {
-            setTimeout(initSillyTavernEvents, 500);
-            return;
+    // --- EventSource 安全監視 ---
+    function setupEventSourceListeners() {
+        if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
+            const context = SillyTavern.getContext();
+            if (context && context.eventSource && context.eventTypes) {
+                const { eventSource, eventTypes } = context;
+
+                const safeOn = (eventType, handler) => {
+                    if (eventType && typeof eventSource.on === 'function') {
+                        eventSource.on(eventType, handler);
+                    }
+                };
+
+                safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
+                safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, safeUpdateImage);
+                safeOn(eventTypes.USER_MESSAGE_RENDERED, safeUpdateImage);
+
+                const onCharacterOrChatChanged = () => {
+                    loadCharacterData(true);
+                };
+
+                safeOn(eventTypes.CHAT_CHANGED, onCharacterOrChatChanged);
+                safeOn(eventTypes.CHARACTER_SELECTED, onCharacterOrChatChanged);
+
+                console.log("✅ SillyTavern EventSource による監視を開始しました。");
+            }
         }
-
-        console.log("✅ SillyTavern EventSource による監視を開始しました。");
-
-        SillyTavern.eventSource.on(SillyTavern.EventTypes.CHARACTER_LOADED, () => {
-            loadCharacterData(true);
-        });
-
-        SillyTavern.eventSource.on(SillyTavern.EventTypes.MESSAGE_RECEIVED, () => {
-            safeUpdateImage();
-        });
-
-        SillyTavern.eventSource.on(SillyTavern.EventTypes.USER_MESSAGE_RENDERED, () => {
-            safeUpdateImage();
-        });
-
-        SillyTavern.eventSource.on(SillyTavern.EventTypes.CHARACTER_MESSAGE_RENDERED, () => {
-            safeUpdateImage();
-        });
-
-        SillyTavern.eventSource.on(SillyTavern.EventTypes.CHAT_CHANGED, () => {
-            loadCharacterData(true);
-        });
-
-        setupChatDomObserver();
-        loadCharacterData();
     }
 
-    initSillyTavernEvents();
+    // --- 初期ロードとポーリング ---
+    setupEventSourceListeners();
+    loadCharacterData(true);
+    setupChatDomObserver();
+
+    let pollCount = 0;
+    const initialPoll = setInterval(() => {
+        loadCharacterData();
+        pollCount++;
+        if (pollCount > 10) clearInterval(initialPoll);
+    }, 1000);
 })();
