@@ -43,14 +43,17 @@
     async function detectImageExtension(imagePath) {
         if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
         const cleanPath = imagePath.trim();
-
-        // 拡張子の自動補完・総当たり処理を廃止し、そのままのパスで存在確認を行う
-        const exists = await checkMediaExists(cleanPath);
-        if (exists) {
-            // console.log(`✅ メディア確認成功: ${cleanPath}`); // 必要であればコメントアウトを解除してログ出力
+        if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             return cleanPath;
         }
-
+        for (const ext of ALLOWED_EXTENSIONS) {
+            const imagePathWithExt = `${cleanPath}.${ext}`;
+            const exists = await checkMediaExists(imagePathWithExt);
+            if (exists) {
+                console.log(`✅ 拡張子自動検出: ${imagePathWithExt}`);
+                return imagePathWithExt;
+            }
+        }
         console.warn(`⚠ メディアが見つかりません: ${cleanPath}`);
         return null;
     }
