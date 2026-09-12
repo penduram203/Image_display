@@ -98,27 +98,18 @@
         });
     }
 
-    async function detectImageMapExtensions(imageMap) {
-        if (!imageMap) return imageMap;
-        const detectedMap = {};
-        for (const [key, value] of Object.entries(imageMap)) {
-            if (Array.isArray(value)) {
-                const detectedArray = [];
-                for (const imagePath of value) {
-                    const detectedPath = await detectImageExtension(imagePath);
-                    if (detectedPath) {
-                        detectedArray.push(detectedPath);
-                    }
-                }
-                detectedMap[key] = detectedArray.length > 0 ? detectedArray : value;
-            } else if (typeof value === 'string') {
-                const detectedPath = await detectImageExtension(value);
-                detectedMap[key] = detectedPath || value;
+    // --- 【修正後】画像の存在確認ネットワークリクエストを廃止し、404発生をゼロにする ---
+    function detectImageMapExtensions(map) {
+        const processedMap = {};
+        for (const [key, val] of Object.entries(map)) {
+            if (typeof val === 'string') {
+                // 既に拡張子(.png, .webp等)が含まれていればそのまま、無ければ .png を自動付与
+                processedMap[key] = /\.[a-zA-Z0-9]+$/.test(val) ? val : `${val}.png`;
             } else {
-                detectedMap[key] = value;
+                processedMap[key] = val;
             }
         }
-        return detectedMap;
+        return Promise.resolve(processedMap);
     }
 
     // --- UI要素の作成 ---
@@ -478,6 +469,7 @@
         return null;
     }
 
+    // --- 【修正後】メモリ内データを最優先し、不必要な fetch リクエストを回避 ---
     async function loadCharacterData(forceRefresh = false) {
         const charName = getCharacterNameFromDOM();
 
@@ -503,20 +495,25 @@
         }
 
         let loadedMap = null;
-        try {
-            const extPath = `addchara/${charName}/${charName}_ext.json`;
-            const resp = await fetch(extPath);
-            if (resp.ok) {
-                const data = await resp.json();
-                loadedMap = findImageMapInData(data);
-            }
-        } catch (e) {
-            console.warn(`[Image Display] ${charName}_ext.json の読み込みをスキップ:`, e);
+        const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
+
+        // 1. SillyTavern本体が読み込み済みのキャラデータを最優先で探索（404の回避）
+        if (context && context.character && context.character.data) {
+            loadedMap = findImageMapInData(context.character.data);
         }
 
-        const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
-        if (!loadedMap && context && context.character && context.character.data) {
-            loadedMap = findImageMapInData(context.character.data);
+        // 2. メモリ上にデータが存在しない場合のみ外部ファイル取得を試みる
+        if (!loadedMap) {
+            try {
+                const extPath = `addchara/${charName}/${charName}_ext.json`;
+                const resp = await fetch(extPath);
+                if (resp.ok) {
+                    const data = await resp.json();
+                    loadedMap = findImageMapInData(data);
+                }
+            } catch (e) {
+                console.warn(`[Image Display] ${charName}_ext.json の読み込みをスキップ:`, e);
+            }
         }
 
         if (loadedMap) {
