@@ -3,12 +3,11 @@
     const MODULE_NAME = 'image_display';
     const OLD_STORAGE_KEY = 'imageDisplayState';
 
-    // メディアの存在確認・読み込み用キャッシュマップ
-    const mediaExistsCache = new Map();
-
     // --- デフォルト値とグローバル変数の定義 ---
     const DEFAULT_WIDTH = 300, DEFAULT_HEIGHT = 200, DEFAULT_LEFT = 100, DEFAULT_TOP = 100, DEFAULT_BG_COLOR = '#000000';
-    const defaultImageMap = { "default": "addchara/default" };
+    const DEFAULT_EXT = '.mp4'; // 拡張子がない場合の補完用デフォルト拡張子
+    const defaultImageMap = { "default": `addchara/default${DEFAULT_EXT}` };
+    
     let currentCharacter = null;
     let currentImageMap = defaultImageMap;
     let currentImageUrl = null;
@@ -32,93 +31,41 @@
         };
     }
 
-    // --- 拡張子自動検出関数（動画・画像対応） ---
-    const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp', 'mp4', 'webm'];
-
+    // --- 動画判定関数 ---
     function isVideoUrl(url) {
         if (!url || typeof url !== 'string') return false;
         return !!url.match(/\.(mp4|webm)$/i);
     }
 
-    async function detectImageExtension(imagePath) {
-        if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
-        const cleanPath = imagePath.trim();
-        if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            return cleanPath;
+    // --- 404 総当たり探査の完全無効化 (normalizeMediaPath) ---
+    // fetch や Image/Video による探査を行わず、拡張子がない場合は即座に .mp4 を補完
+    function normalizeMediaPath(mediaPath) {
+        if (!mediaPath || typeof mediaPath !== 'string') return null;
+        const trimmed = mediaPath.trim();
+        if (!trimmed) return null;
+
+        // 既に拡張子が含まれているかチェック
+        if (trimmed.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
+            return trimmed;
         }
-        for (const ext of ALLOWED_EXTENSIONS) {
-            const imagePathWithExt = `${cleanPath}.${ext}`;
-            const exists = await checkMediaExists(imagePathWithExt);
-            if (exists) {
-                console.log(`✅ 拡張子自動検出: ${imagePathWithExt}`);
-                return imagePathWithExt;
-            }
-        }
-        console.warn(`⚠ メディアが見つかりません: ${cleanPath}`);
-        return null;
+
+        // 拡張子がない場合は総当たりせず、直接デフォルト拡張子(.mp4)を補完して返す
+        return `${trimmed}${DEFAULT_EXT}`;
     }
 
-    // 高速チェック＆キャッシュ付きメディア確認
-    function checkMediaExists(mediaUrl) {
-        if (mediaExistsCache.has(mediaUrl)) {
-            return Promise.resolve(mediaExistsCache.get(mediaUrl));
-        }
-
-        return new Promise((resolve) => {
-            if (!mediaUrl || typeof mediaUrl !== 'string' || !mediaUrl.trim()) {
-                mediaExistsCache.set(mediaUrl, false);
-                return resolve(false);
-            }
-            const cleanUrl = mediaUrl.trim();
-
-            if (isVideoUrl(cleanUrl)) {
-                const video = document.createElement('video');
-                video.preload = 'metadata';
-                video.onloadedmetadata = () => {
-                    mediaExistsCache.set(cleanUrl, true);
-                    resolve(true);
-                };
-                video.onerror = () => {
-                    mediaExistsCache.set(cleanUrl, false);
-                    resolve(false);
-                };
-                video.src = cleanUrl;
-            } else {
-                const img = new Image();
-                img.onload = () => {
-                    mediaExistsCache.set(cleanUrl, true);
-                    resolve(true);
-                };
-                img.onerror = () => {
-                    mediaExistsCache.set(cleanUrl, false);
-                    resolve(false);
-                };
-                img.src = cleanUrl;
-            }
-        });
-    }
-
-    async function detectImageMapExtensions(imageMap) {
+    function normalizeImageMap(imageMap) {
         if (!imageMap) return imageMap;
-        const detectedMap = {};
+        const normalizedMap = {};
         for (const [key, value] of Object.entries(imageMap)) {
             if (Array.isArray(value)) {
-                const detectedArray = [];
-                for (const imagePath of value) {
-                    const detectedPath = await detectImageExtension(imagePath);
-                    if (detectedPath) {
-                        detectedArray.push(detectedPath);
-                    }
-                }
-                detectedMap[key] = detectedArray.length > 0 ? detectedArray : value;
+                normalizedMap[key] = value.map(v => normalizeMediaPath(v)).filter(Boolean);
             } else if (typeof value === 'string') {
-                const detectedPath = await detectImageExtension(value);
-                detectedMap[key] = detectedPath || value;
+                normalizedMap[key] = normalizeMediaPath(value) || value;
             } else {
-                detectedMap[key] = value;
+                normalizedMap[key] = value;
             }
         }
-        return detectedMap;
+        return normalizedMap;
     }
 
     // --- UI要素の作成 ---
@@ -281,24 +228,20 @@
         return null;
     }
 
-    // --- メディア表示更新処理（チラつき防止修正版） ---
+    // --- メディア表示更新処理 ---
     async function updateImage() {
         if (isDefaultImageFailed) return;
         const keywordMedia = findLastKeywordImage();
-        let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
+        let rawUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
 
-        if (!newUrl || typeof newUrl !== 'string' || newUrl.trim() === '') {
+        // 【空 URI ガード】空文字、空白のみ、null、undefined の場合は更新をブロック
+        if (!rawUrl || typeof rawUrl !== 'string' || !rawUrl.trim()) {
             return;
         }
-        newUrl = newUrl.trim();
 
-        // 拡張子が含まれていない場合は自動検出を実施
-        if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            const detected = await detectImageExtension(newUrl);
-            if (detected) {
-                newUrl = detected;
-            }
-        }
+        // パスを標準化（探査なしで拡張子を補完）
+        const newUrl = normalizeMediaPath(rawUrl);
+        if (!newUrl) return;
 
         // 表示パスが変わらない場合、かつコンテナ内に既にメディアが存在する場合はスキップ
         if (currentImageUrl === newUrl && mediaContainer.children.length > 0) {
@@ -308,7 +251,7 @@
         console.log(`🖼 メディアを更新: ${newUrl}`);
         currentImageUrl = newUrl;
 
-        // 【修正点】画像読み込み中の前画像チラつきを防止するため、描画前にコンテナを一旦空にする
+        // 前画像のチラつき防止のため、描画前にコンテナを一旦空にする
         mediaContainer.innerHTML = '';
 
         if (isVideoUrl(newUrl)) {
@@ -326,14 +269,12 @@
             mediaContainer.appendChild(videoElement);
             videoElement.play().catch(() => {});
         } else {
-            // 【修正点】メモリ上でプレロードし、準備完了後にDOMへ挿入することで前画像のチラつきを解消
             const imgElement = document.createElement('img');
             imgElement.style.width = '100%';
             imgElement.style.height = '100%';
             imgElement.style.objectFit = 'contain';
 
             imgElement.onload = () => {
-                // プレロード完了時にURLが途中で変わっていなければDOMへ追加
                 if (currentImageUrl === newUrl) {
                     mediaContainer.innerHTML = '';
                     mediaContainer.appendChild(imgElement);
@@ -353,22 +294,13 @@
 
     async function handleMediaError(element, src) {
         console.error("メディアの読み込みに失敗しました:", src);
-        if (src && !src.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            const detectedPath = await detectImageExtension(src);
-            if (detectedPath) {
-                element.src = detectedPath;
-                if (isVideoUrl(detectedPath) && element.tagName.toLowerCase() === 'video') {
-                    element.play().catch(() => {});
-                }
-                return;
-            }
-        }
-        if (src && (src.match(/default\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i) || src.endsWith('/default'))) {
+        if (src && (src.includes('default.') || src.endsWith('/default'))) {
             isDefaultImageFailed = true;
             console.warn("⚠ デフォルトメディアが見つかりません。表示を無効化します");
             mediaContainer.style.display = 'none';
         } else {
-            const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
+            const fallbackRaw = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
+            const fallback = normalizeMediaPath(fallbackRaw);
             if (fallback && fallback !== src) {
                 element.src = fallback;
                 if (isVideoUrl(fallback) && element.tagName.toLowerCase() === 'video') {
@@ -415,7 +347,7 @@
             safeUpdateImage();
         }, 150);
 
-        chatDomObserver = new MutationObserver((mutations) => {
+        chatDomObserver = new MutationObserver(() => {
             debouncedUpdate();
         });
 
@@ -444,46 +376,57 @@
         return null;
     }
 
+    // 【空 ID ガード】無効・空白・ユーザー名と一致する不正な文字は null として弾く
     function getCharacterNameFromDOM() {
         const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
         const userName = (context && (context.name1 || context.user_name)) || 'ユーザー';
 
-        if (context && context.character && context.character.name && context.character.name !== userName) {
-            return context.character.name;
+        const validateName = (name) => {
+            if (!name || typeof name !== 'string') return null;
+            const trimmed = name.trim();
+            if (!trimmed || trimmed === userName) return null;
+            return trimmed;
+        };
+
+        if (context && context.character && context.character.name) {
+            const valid = validateName(context.character.name);
+            if (valid) return valid;
         }
 
         if (context && context.characters && typeof context.characterId !== 'undefined' && context.characters[context.characterId]) {
-            const cName = context.characters[context.characterId].name;
-            if (cName && cName !== userName) return cName;
+            const valid = validateName(context.characters[context.characterId].name);
+            if (valid) return valid;
         }
 
         const selectedOption = document.querySelector('#character_select option:checked, select[name="character"] option:checked');
-        if (selectedOption && selectedOption.textContent.trim()) {
-            const val = selectedOption.textContent.trim();
-            if (val !== userName) return val;
+        if (selectedOption) {
+            const valid = validateName(selectedOption.textContent);
+            if (valid) return valid;
         }
 
         const nameEl = document.querySelector('#character_name_holder, #character_name_id, .character_name, .ch_name');
-        if (nameEl && nameEl.textContent.trim()) {
-            const val = nameEl.textContent.trim();
-            if (val !== userName) return val;
+        if (nameEl) {
+            const valid = validateName(nameEl.textContent);
+            if (valid) return valid;
         }
 
         const navBlock = document.querySelector('.right-nav-char-block[data-name]');
         if (navBlock && navBlock.dataset && navBlock.dataset.name) {
-            const val = navBlock.dataset.name;
-            if (val !== userName) return val;
+            const valid = validateName(navBlock.dataset.name);
+            if (valid) return valid;
         }
 
         return null;
     }
 
+    // 【_ext.json 読み込みの優先・同期先行処理】
     async function loadCharacterData(forceRefresh = false) {
         const charName = getCharacterNameFromDOM();
 
+        // 空 ID または文字化け/未検出の場合はデフォルトマップを標準化して適用
         if (!charName) {
             if (currentImageMap === defaultImageMap) {
-                currentImageMap = await detectImageMapExtensions(defaultImageMap);
+                currentImageMap = normalizeImageMap(defaultImageMap);
                 safeUpdateImage();
             }
             return;
@@ -503,6 +446,8 @@
         }
 
         let loadedMap = null;
+        
+        // 1. 外部 ext.json の優先取得 (先行処理)
         try {
             const extPath = `addchara/${charName}/${charName}_ext.json`;
             const resp = await fetch(extPath);
@@ -514,19 +459,21 @@
             console.warn(`[Image Display] ${charName}_ext.json の読み込みをスキップ:`, e);
         }
 
+        // 2. ext.json がない場合はコンテキストのキャラクターデータを利用
         const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
         if (!loadedMap && context && context.character && context.character.data) {
             loadedMap = findImageMapInData(context.character.data);
         }
 
+        // 3. 設定マップの適用（ダイレクトに正規化パスを割り当て）
         if (loadedMap) {
-            const detectedMap = await detectImageMapExtensions(loadedMap);
-            currentImageMap = detectedMap;
-            imageMapCache.set(charName, detectedMap);
+            const normalizedMap = normalizeImageMap(loadedMap);
+            currentImageMap = normalizedMap;
+            imageMapCache.set(charName, normalizedMap);
             console.log(`✅ キャラクター設定マップをロードしました (${charName}):`, currentImageMap);
         } else {
             console.warn(`⚠ ${charName} の拡張設定が見つかりませんでした。デフォルト画像を使用します。`);
-            currentImageMap = await detectImageMapExtensions(defaultImageMap);
+            currentImageMap = normalizeImageMap(defaultImageMap);
         }
         safeUpdateImage();
     }
@@ -567,20 +514,23 @@
     document.getElementById('close-custom-window').addEventListener('click', closeCustomWindow);
 
     ['custom-width', 'custom-height', 'custom-left', 'custom-top'].forEach(id => {
-        document.getElementById(id).addEventListener('input', () => {
-            if (currentMode !== 'normal') return;
-            const w = parseInt(document.getElementById('custom-width').value) || DEFAULT_WIDTH;
-            const h = parseInt(document.getElementById('custom-height').value) || DEFAULT_HEIGHT;
-            const l = parseInt(document.getElementById('custom-left').value) || DEFAULT_LEFT;
-            const t = parseInt(document.getElementById('custom-top').value) || DEFAULT_TOP;
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('input', () => {
+                if (currentMode !== 'normal') return;
+                const w = parseInt(document.getElementById('custom-width').value) || DEFAULT_WIDTH;
+                const h = parseInt(document.getElementById('custom-height').value) || DEFAULT_HEIGHT;
+                const l = parseInt(document.getElementById('custom-left').value) || DEFAULT_LEFT;
+                const t = parseInt(document.getElementById('custom-top').value) || DEFAULT_TOP;
 
-            imageContainer.style.width = `${w}px`;
-            imageContainer.style.height = `${h}px`;
-            imageContainer.style.left = `${l}px`;
-            imageContainer.style.top = `${t}px`;
-            preNormalState = { width: w, height: h, left: l, top: t };
-            saveDisplayState();
-        });
+                imageContainer.style.width = `${w}px`;
+                imageContainer.style.height = `${h}px`;
+                imageContainer.style.left = `${l}px`;
+                imageContainer.style.top = `${t}px`;
+                preNormalState = { width: w, height: h, left: l, top: t };
+                saveDisplayState();
+            });
+        }
     });
 
     // --- 状態の永続化・復元 ---
