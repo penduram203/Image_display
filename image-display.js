@@ -43,9 +43,12 @@
     async function detectImageExtension(imagePath) {
         if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
         const cleanPath = imagePath.trim();
+        
+        // すでに有効な拡張子（画像・動画）が含まれている場合は、404チェックや総当たりをせずそのまま返す
         if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             return cleanPath;
         }
+
         for (const ext of ALLOWED_EXTENSIONS) {
             const imagePathWithExt = `${cleanPath}.${ext}`;
             const exists = await checkMediaExists(imagePathWithExt);
@@ -203,7 +206,6 @@
             trimmed = trimmed.substring(4).trim();
         }
         
-        // カンマ区切りによるOR評価に対応 (例: "www,ttt")
         const terms = trimmed.split(',').map(t => t.trim()).filter(t => t);
         const matches = terms.some(term => text.toLowerCase().includes(term.toLowerCase()));
         
@@ -281,7 +283,7 @@
         return null;
     }
 
-    // --- メディア表示更新処理（チラつき防止修正版） ---
+    // --- メディア表示更新処理 ---
     async function updateImage() {
         if (isDefaultImageFailed) return;
         const keywordMedia = findLastKeywordImage();
@@ -292,7 +294,6 @@
         }
         newUrl = newUrl.trim();
 
-        // 拡張子が含まれていない場合は自動検出を実施
         if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             const detected = await detectImageExtension(newUrl);
             if (detected) {
@@ -300,7 +301,6 @@
             }
         }
 
-        // 表示パスが変わらない場合、かつコンテナ内に既にメディアが存在する場合はスキップ
         if (currentImageUrl === newUrl && mediaContainer.children.length > 0) {
             return;
         }
@@ -308,7 +308,6 @@
         console.log(`🖼 メディアを更新: ${newUrl}`);
         currentImageUrl = newUrl;
 
-        // 【修正点】画像読み込み中の前画像チラつきを防止するため、描画前にコンテナを一旦空にする
         mediaContainer.innerHTML = '';
 
         if (isVideoUrl(newUrl)) {
@@ -326,14 +325,12 @@
             mediaContainer.appendChild(videoElement);
             videoElement.play().catch(() => {});
         } else {
-            // 【修正点】メモリ上でプレロードし、準備完了後にDOMへ挿入することで前画像のチラつきを解消
             const imgElement = document.createElement('img');
             imgElement.style.width = '100%';
             imgElement.style.height = '100%';
             imgElement.style.objectFit = 'contain';
 
             imgElement.onload = () => {
-                // プレロード完了時にURLが途中で変わっていなければDOMへ追加
                 if (currentImageUrl === newUrl) {
                     mediaContainer.innerHTML = '';
                     mediaContainer.appendChild(imgElement);
@@ -344,7 +341,6 @@
         }
     }
 
-    // 描画遅延付きで画面を更新する関数
     function safeUpdateImage() {
         setTimeout(() => {
             updateImage();
@@ -835,6 +831,7 @@
                 safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
                 safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, safeUpdateImage);
                 safeOn(eventTypes.USER_MESSAGE_RENDERED, safeUpdateImage);
+                safeOn(eventTypes.MESSAGE_SENT, safeUpdateImage); // 即時反映用
 
                 const onCharacterOrChatChanged = () => {
                     loadCharacterData(true);
