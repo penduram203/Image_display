@@ -16,10 +16,11 @@
     let preNormalState = { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, left: DEFAULT_LEFT, top: DEFAULT_TOP };
     let isDragging = false, isResizing = false, offsetX, offsetY, isCustomWindowOpen = false;
     const imageMapCache = new Map();
+    let isDefaultImageFailed = false;
     let currentTextMode = 'user'; // 'user' または 'ai'
     let streamingTimer = null;
     let lastStreamingText = '';
-    const STREAMING_DELAY = 100;
+    const STREAMING_DELAY = 500;
     let chatDomObserver = null;
 
     // デバウンス処理
@@ -32,67 +33,69 @@
     }
 
     // --- 拡張子自動検出関数（動画・画像対応） ---
-    const ALLOWED_EXTENSIONS = ['mp4', 'webm', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp'];
+    const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp', 'mp4', 'webm'];
 
     function isVideoUrl(url) {
         if (!url || typeof url !== 'string') return false;
         return !!url.match(/\.(mp4|webm)$/i);
     }
 
-    // HEAD/GETリクエストによるメディア存在確認（ログ汚染とエラーを防止）
-    async function checkMediaExists(mediaUrl) {
-        if (!mediaUrl || typeof mediaUrl !== 'string' || !mediaUrl.trim()) {
-            return false;
-        }
-        const cleanUrl = mediaUrl.trim();
-        if (mediaExistsCache.has(cleanUrl)) {
-            return mediaExistsCache.get(cleanUrl);
-        }
-
-        try {
-            const response = await fetch(cleanUrl, { method: 'HEAD' });
-            const exists = response.ok;
-            mediaExistsCache.set(cleanUrl, exists);
-            return exists;
-        } catch (e) {
-            // HEADリクエストが拒否される環境向けフォールバック
-            return new Promise((resolve) => {
-                if (isVideoUrl(cleanUrl)) {
-                    const video = document.createElement('video');
-                    video.onloadedmetadata = () => { mediaExistsCache.set(cleanUrl, true); resolve(true); };
-                    video.onerror = () => { mediaExistsCache.set(cleanUrl, false); resolve(false); };
-                    video.src = cleanUrl;
-                } else {
-                    const img = new Image();
-                    img.onload = () => { mediaExistsCache.set(cleanUrl, true); resolve(true); };
-                    img.onerror = () => { mediaExistsCache.set(cleanUrl, false); resolve(false); };
-                    img.src = cleanUrl;
-                }
-            });
-        }
-    }
-
     async function detectImageExtension(imagePath) {
         if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
         const cleanPath = imagePath.trim();
-        
-        // 既に拡張子が含まれている場合
         if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            const exists = await checkMediaExists(cleanPath);
-            return exists ? cleanPath : null;
+            return cleanPath;
         }
-
-        // 各拡張子を順番に探索
         for (const ext of ALLOWED_EXTENSIONS) {
-            const pathWithExt = `${cleanPath}.${ext}`;
-            const exists = await checkMediaExists(pathWithExt);
+            const imagePathWithExt = `${cleanPath}.${ext}`;
+            const exists = await checkMediaExists(imagePathWithExt);
             if (exists) {
-                console.log(`✅ 拡張子自動検出成功: ${pathWithExt}`);
-                return pathWithExt;
+                console.log(`✅ 拡張子自動検出: ${imagePathWithExt}`);
+                return imagePathWithExt;
             }
         }
-        console.warn(`⚠ 有効なメディアが見つかりませんでした: ${cleanPath}`);
+        console.warn(`⚠ メディアが見つかりません: ${cleanPath}`);
         return null;
+    }
+
+    // 高速チェック＆キャッシュ付きメディア確認
+    function checkMediaExists(mediaUrl) {
+        if (mediaExistsCache.has(mediaUrl)) {
+            return Promise.resolve(mediaExistsCache.get(mediaUrl));
+        }
+
+        return new Promise((resolve) => {
+            if (!mediaUrl || typeof mediaUrl !== 'string' || !mediaUrl.trim()) {
+                mediaExistsCache.set(mediaUrl, false);
+                return resolve(false);
+            }
+            const cleanUrl = mediaUrl.trim();
+
+            if (isVideoUrl(cleanUrl)) {
+                const video = document.createElement('video');
+                video.preload = 'metadata';
+                video.onloadedmetadata = () => {
+                    mediaExistsCache.set(cleanUrl, true);
+                    resolve(true);
+                };
+                video.onerror = () => {
+                    mediaExistsCache.set(cleanUrl, false);
+                    resolve(false);
+                };
+                video.src = cleanUrl;
+            } else {
+                const img = new Image();
+                img.onload = () => {
+                    mediaExistsCache.set(cleanUrl, true);
+                    resolve(true);
+                };
+                img.onerror = () => {
+                    mediaExistsCache.set(cleanUrl, false);
+                    resolve(false);
+                };
+                img.src = cleanUrl;
+            }
+        });
     }
 
     async function detectImageMapExtensions(imageMap) {
@@ -125,7 +128,7 @@
 
     const header = document.createElement('div');
     header.id = 'image-display-header';
-    header.textContent = 'メディア表示エリア';
+    header.textContent = 'メディア表示エリア (ドラッグで移動)';
     imageContainer.appendChild(header);
 
     const colorPicker = document.createElement('input');
@@ -200,6 +203,7 @@
             trimmed = trimmed.substring(4).trim();
         }
         
+        // カンマ区切りによるOR評価に対応 (例: "www,ttt")
         const terms = trimmed.split(',').map(t => t.trim()).filter(t => t);
         const matches = terms.some(term => text.toLowerCase().includes(term.toLowerCase()));
         
@@ -265,12 +269,7 @@
         return null;
     }
 
-    function findLastKeywordImage(overrideText = null) {
-        if (overrideText) {
-            const mediaUrl = findMatchingImageUrl(overrideText);
-            if (mediaUrl) return mediaUrl;
-        }
-
+    function findLastKeywordImage() {
         const isUserMode = currentTextMode === 'user';
         const selector = `.mes[is_user="${isUserMode}"] .mes_text`;
         const messages = Array.from(document.querySelectorAll(selector));
@@ -282,35 +281,34 @@
         return null;
     }
 
-    // --- メディア表示更新処理 ---
-    async function updateImage(overrideText = null) {
-        const keywordMedia = findLastKeywordImage(overrideText);
-        let rawUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
+    // --- メディア表示更新処理（チラつき防止修正版） ---
+    async function updateImage() {
+        if (isDefaultImageFailed) return;
+        const keywordMedia = findLastKeywordImage();
+        let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
 
-        if (!rawUrl || typeof rawUrl !== 'string' || !rawUrl.trim()) {
-            console.warn("⚠ 表示対象のメディアURLが定義されていません。");
+        if (!newUrl || typeof newUrl !== 'string' || newUrl.trim() === '') {
             return;
         }
+        newUrl = newUrl.trim();
 
-        let newUrl = rawUrl.trim();
-
-        // 拡張子補完処理
+        // 拡張子が含まれていない場合は自動検出を実施
         if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             const detected = await detectImageExtension(newUrl);
             if (detected) {
                 newUrl = detected;
-            } else {
-                console.warn(`⚠ 有効なファイルが存在しないため描画を中断: ${newUrl}`);
-                return;
             }
         }
 
+        // 表示パスが変わらない場合、かつコンテナ内に既にメディアが存在する場合はスキップ
         if (currentImageUrl === newUrl && mediaContainer.children.length > 0) {
             return;
         }
 
-        console.log(`🖼 メディアを表示描画中: ${newUrl}`);
+        console.log(`🖼 メディアを更新: ${newUrl}`);
         currentImageUrl = newUrl;
+
+        // 【修正点】画像読み込み中の前画像チラつきを防止するため、描画前にコンテナを一旦空にする
         mediaContainer.innerHTML = '';
 
         if (isVideoUrl(newUrl)) {
@@ -324,61 +322,59 @@
             videoElement.style.width = '100%';
             videoElement.style.height = '100%';
             videoElement.style.objectFit = 'contain';
+            videoElement.onerror = () => handleMediaError(videoElement, newUrl);
             mediaContainer.appendChild(videoElement);
-            videoElement.play().catch(e => console.warn("動画再生制限:", e));
+            videoElement.play().catch(() => {});
         } else {
+            // 【修正点】メモリ上でプレロードし、準備完了後にDOMへ挿入することで前画像のチラつきを解消
             const imgElement = document.createElement('img');
             imgElement.style.width = '100%';
             imgElement.style.height = '100%';
             imgElement.style.objectFit = 'contain';
+
+            imgElement.onload = () => {
+                // プレロード完了時にURLが途中で変わっていなければDOMへ追加
+                if (currentImageUrl === newUrl) {
+                    mediaContainer.innerHTML = '';
+                    mediaContainer.appendChild(imgElement);
+                }
+            };
+            imgElement.onerror = () => handleMediaError(imgElement, newUrl);
             imgElement.src = newUrl;
-            mediaContainer.appendChild(imgElement);
         }
     }
 
-    function safeUpdateImage(overrideText = null) {
-        updateImage(overrideText);
+    // 描画遅延付きで画面を更新する関数
+    function safeUpdateImage() {
+        setTimeout(() => {
+            updateImage();
+        }, 50);
     }
 
-    // --- 送信直後の前倒しトリガー ---
-    function setupFastSubmitTrigger() {
-        const sendButton = document.querySelector('#send_textarea, #send_btn, .send_btn');
-        const sendTextarea = document.querySelector('#send_textarea, textarea');
-
-        const triggerImmediateUpdate = () => {
-            if (currentTextMode !== 'user' || !sendTextarea) return;
-            const text = sendTextarea.value;
-            if (text && text.trim() !== '') {
-                console.log("⚡ 送信前倒しトリガー検知:", text);
-                safeUpdateImage(text);
+    async function handleMediaError(element, src) {
+        console.error("メディアの読み込みに失敗しました:", src);
+        if (src && !src.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
+            const detectedPath = await detectImageExtension(src);
+            if (detectedPath) {
+                element.src = detectedPath;
+                if (isVideoUrl(detectedPath) && element.tagName.toLowerCase() === 'video') {
+                    element.play().catch(() => {});
+                }
+                return;
             }
-        };
-
-        if (sendButton) {
-            sendButton.addEventListener('click', triggerImmediateUpdate, { capture: true });
         }
-
-        if (sendTextarea) {
-            sendTextarea.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    triggerImmediateUpdate();
+        if (src && (src.match(/default\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i) || src.endsWith('/default'))) {
+            isDefaultImageFailed = true;
+            console.warn("⚠ デフォルトメディアが見つかりません。表示を無効化します");
+            mediaContainer.style.display = 'none';
+        } else {
+            const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
+            if (fallback && fallback !== src) {
+                element.src = fallback;
+                if (isVideoUrl(fallback) && element.tagName.toLowerCase() === 'video') {
+                    element.play().catch(() => {});
                 }
-            }, { capture: true });
-        }
-
-        if (typeof eventSource !== 'undefined' && typeof event_types !== 'undefined') {
-            eventSource.on(event_types.USER_MESSAGE_RENDERED || 'user_message_rendered', () => {
-                if (currentTextMode === 'user') {
-                    safeUpdateImage();
-                }
-            });
-
-            eventSource.on(event_types.CHAT_CHANGED || 'chat_changed', () => {
-                setTimeout(() => loadCharacterData(true), 300);
-            });
-            eventSource.on(event_types.CHARACTER_LOADED || 'character_loaded', () => {
-                setTimeout(() => loadCharacterData(true), 300);
-            });
+            }
         }
     }
 
@@ -417,9 +413,9 @@
         const debouncedUpdate = debounce(() => {
             handleStreamingUpdate();
             safeUpdateImage();
-        }, 100);
+        }, 150);
 
-        chatDomObserver = new MutationObserver(() => {
+        chatDomObserver = new MutationObserver((mutations) => {
             debouncedUpdate();
         });
 
@@ -486,8 +482,10 @@
         const charName = getCharacterNameFromDOM();
 
         if (!charName) {
-            currentImageMap = await detectImageMapExtensions(defaultImageMap);
-            safeUpdateImage();
+            if (currentImageMap === defaultImageMap) {
+                currentImageMap = await detectImageMapExtensions(defaultImageMap);
+                safeUpdateImage();
+            }
             return;
         }
 
@@ -821,12 +819,44 @@
         }
     });
 
-    // 初期化処理の開始
-    setupFastSubmitTrigger();
-    setupChatDomObserver();
-    
-    setTimeout(() => {
-        loadCharacterData(true);
-    }, 500);
+    // --- EventSource 安全監視 ---
+    function setupEventSourceListeners() {
+        if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
+            const context = SillyTavern.getContext();
+            if (context && context.eventSource && context.eventTypes) {
+                const { eventSource, eventTypes } = context;
 
+                const safeOn = (eventType, handler) => {
+                    if (eventType && typeof eventSource.on === 'function') {
+                        eventSource.on(eventType, handler);
+                    }
+                };
+
+                safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
+                safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, safeUpdateImage);
+                safeOn(eventTypes.USER_MESSAGE_RENDERED, safeUpdateImage);
+
+                const onCharacterOrChatChanged = () => {
+                    loadCharacterData(true);
+                };
+
+                safeOn(eventTypes.CHAT_CHANGED, onCharacterOrChatChanged);
+                safeOn(eventTypes.CHARACTER_SELECTED, onCharacterOrChatChanged);
+
+                console.log("✅ SillyTavern EventSource による監視を開始しました。");
+            }
+        }
+    }
+
+    // --- 初期ロードとポーリング ---
+    setupEventSourceListeners();
+    loadCharacterData(true);
+    setupChatDomObserver();
+
+    let pollCount = 0;
+    const initialPoll = setInterval(() => {
+        loadCharacterData();
+        pollCount++;
+        if (pollCount > 10) clearInterval(initialPoll);
+    }, 1000);
 })();
