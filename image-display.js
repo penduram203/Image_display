@@ -43,17 +43,14 @@
     async function detectImageExtension(imagePath) {
         if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
         const cleanPath = imagePath.trim();
-        if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
+
+        // 拡張子の自動補完・総当たり処理を廃止し、そのままのパスで存在確認を行う
+        const exists = await checkMediaExists(cleanPath);
+        if (exists) {
+            // console.log(`✅ メディア確認成功: ${cleanPath}`); // 必要であればコメントアウトを解除してログ出力
             return cleanPath;
         }
-        for (const ext of ALLOWED_EXTENSIONS) {
-            const imagePathWithExt = `${cleanPath}.${ext}`;
-            const exists = await checkMediaExists(imagePathWithExt);
-            if (exists) {
-                console.log(`✅ 拡張子自動検出: ${imagePathWithExt}`);
-                return imagePathWithExt;
-            }
-        }
+
         console.warn(`⚠ メディアが見つかりません: ${cleanPath}`);
         return null;
     }
@@ -98,18 +95,27 @@
         });
     }
 
-    // --- 【修正後】画像の存在確認ネットワークリクエストを廃止し、404発生をゼロにする ---
-    function detectImageMapExtensions(map) {
-        const processedMap = {};
-        for (const [key, val] of Object.entries(map)) {
-            if (typeof val === 'string') {
-                // 既に拡張子(.png, .webp等)が含まれていればそのまま、無ければ .png を自動付与
-                processedMap[key] = /\.[a-zA-Z0-9]+$/.test(val) ? val : `${val}.png`;
+    async function detectImageMapExtensions(imageMap) {
+        if (!imageMap) return imageMap;
+        const detectedMap = {};
+        for (const [key, value] of Object.entries(imageMap)) {
+            if (Array.isArray(value)) {
+                const detectedArray = [];
+                for (const imagePath of value) {
+                    const detectedPath = await detectImageExtension(imagePath);
+                    if (detectedPath) {
+                        detectedArray.push(detectedPath);
+                    }
+                }
+                detectedMap[key] = detectedArray.length > 0 ? detectedArray : value;
+            } else if (typeof value === 'string') {
+                const detectedPath = await detectImageExtension(value);
+                detectedMap[key] = detectedPath || value;
             } else {
-                processedMap[key] = val;
+                detectedMap[key] = value;
             }
         }
-        return Promise.resolve(processedMap);
+        return detectedMap;
     }
 
     // --- UI要素の作成 ---
@@ -469,7 +475,6 @@
         return null;
     }
 
-    // --- 【修正後】メモリ内データを最優先し、不必要な fetch リクエストを回避 ---
     async function loadCharacterData(forceRefresh = false) {
         const charName = getCharacterNameFromDOM();
 
@@ -495,25 +500,20 @@
         }
 
         let loadedMap = null;
-        const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
-
-        // 1. SillyTavern本体が読み込み済みのキャラデータを最優先で探索（404の回避）
-        if (context && context.character && context.character.data) {
-            loadedMap = findImageMapInData(context.character.data);
+        try {
+            const extPath = `addchara/${charName}/${charName}_ext.json`;
+            const resp = await fetch(extPath);
+            if (resp.ok) {
+                const data = await resp.json();
+                loadedMap = findImageMapInData(data);
+            }
+        } catch (e) {
+            console.warn(`[Image Display] ${charName}_ext.json の読み込みをスキップ:`, e);
         }
 
-        // 2. メモリ上にデータが存在しない場合のみ外部ファイル取得を試みる
-        if (!loadedMap) {
-            try {
-                const extPath = `addchara/${charName}/${charName}_ext.json`;
-                const resp = await fetch(extPath);
-                if (resp.ok) {
-                    const data = await resp.json();
-                    loadedMap = findImageMapInData(data);
-                }
-            } catch (e) {
-                console.warn(`[Image Display] ${charName}_ext.json の読み込みをスキップ:`, e);
-            }
+        const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
+        if (!loadedMap && context && context.character && context.character.data) {
+            loadedMap = findImageMapInData(context.character.data);
         }
 
         if (loadedMap) {
