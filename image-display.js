@@ -44,7 +44,6 @@
         if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
         const cleanPath = imagePath.trim();
 
-        // すでに有効な拡張子が含まれている場合はそのまますぐ返す（404エラー防止）
         if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             return cleanPath;
         }
@@ -284,13 +283,22 @@
 
     // --- 指定URLでの即時メディア更新 ---
     async function updateImageWithUrl(targetUrl) {
-        if (isDefaultImageFailed || !targetUrl || typeof targetUrl !== 'string' || !targetUrl.trim()) return;
+        if (isDefaultImageFailed) return;
+        
+        // 空文字・不正URLを判定して除外
+        if (!targetUrl || typeof targetUrl !== 'string' || !targetUrl.trim()) {
+            console.warn("⚠ 無効なメディアURLが渡されたため、更新をスキップします。");
+            return;
+        }
         let newUrl = targetUrl.trim();
 
         if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             const detected = await detectImageExtension(newUrl);
             if (detected) {
                 newUrl = detected;
+            } else {
+                console.warn(`⚠ メディア拡張子の補完に失敗しました: ${newUrl}`);
+                return;
             }
         }
 
@@ -368,8 +376,8 @@
             mediaContainer.style.display = 'none';
         } else {
             const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
-            if (fallback && fallback !== src) {
-                element.src = fallback;
+            if (fallback && fallback !== src && fallback.trim()) {
+                element.src = fallback.trim();
                 if (isVideoUrl(fallback) && element.tagName.toLowerCase() === 'video') {
                     element.play().catch(() => {});
                 }
@@ -834,9 +842,14 @@
                 safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
                 safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, safeUpdateImage);
                 safeOn(eventTypes.USER_MESSAGE_RENDERED, safeUpdateImage);
+                
+                // メッセージ削除・編集時の画像更新対応
+                if (eventTypes.MESSAGE_DELETED) safeOn(eventTypes.MESSAGE_DELETED, safeUpdateImage);
+                if (eventTypes.MESSAGE_EDITED) safeOn(eventTypes.MESSAGE_EDITED, safeUpdateImage);
+                if (eventTypes.CHAT_LOADED) safeOn(eventTypes.CHAT_LOADED, safeUpdateImage);
 
-                // MESSAGE_SENT: 送信ボタン押下直後に送信テキストから直接キーワード判定を実施（最速化）
-                safeOn(eventTypes.MESSAGE_SENT, (data) => {
+                // MESSAGE_SENT / GENERATION_STARTED 時に入力文を取得して即時判定
+                const handleImmediateTextMatch = (data) => {
                     if (currentTextMode !== 'user') return;
 
                     let sentText = "";
@@ -844,9 +857,11 @@
                         sentText = data;
                     } else if (data && typeof data.text === 'string') {
                         sentText = data.text;
+                    } else if (data && typeof data.message === 'string') {
+                        sentText = data.message;
                     } else {
                         const inputEl = document.querySelector('#send_textarea');
-                        if (inputEl) sentText = inputEl.value;
+                        if (inputEl && inputEl.value) sentText = inputEl.value;
                     }
 
                     if (sentText) {
@@ -857,7 +872,10 @@
                         }
                     }
                     safeUpdateImage();
-                });
+                };
+
+                safeOn(eventTypes.MESSAGE_SENT, handleImmediateTextMatch);
+                if (eventTypes.GENERATION_STARTED) safeOn(eventTypes.GENERATION_STARTED, handleImmediateTextMatch);
 
                 const onCharacterOrChatChanged = () => {
                     loadCharacterData(true);
