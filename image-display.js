@@ -1,432 +1,386 @@
 (function () {
-    console.log("Image Display: 初期化を開始します。");
+    'use strict';
+
+    // ==========================================
+    // 1. 定数・設定・変数の定義
+    // ==========================================
     const MODULE_NAME = 'image_display';
-    const OLD_STORAGE_KEY = 'imageDisplayState';
+    const OLD_STORAGE_KEY = 'image_display_settings';
+    const DEFAULT_WIDTH = 300;
+    const DEFAULT_HEIGHT = 400;
+    const DEFAULT_LEFT = 20;
+    const DEFAULT_TOP = 20;
+    const DEFAULT_BG_COLOR = '#000000';
+    const DEFAULT_EXT = '.mp4'; // 拡張子がない場合の即時補完用
 
-    // メディアの存在確認・読み込み用キャッシュマップ
-    const mediaExistsCache = new Map();
+    const defaultImageMap = {
+        default: 'addchara/default/default.mp4'
+    };
 
-    // --- デフォルト値とグローバル変数の定義 ---
-    const DEFAULT_WIDTH = 300, DEFAULT_HEIGHT = 200, DEFAULT_LEFT = 100, DEFAULT_TOP = 100, DEFAULT_BG_COLOR = '#000000';
-    const defaultImageMap = { "default": "addchara/default" };
     let currentCharacter = null;
-    let currentImageMap = defaultImageMap;
-    let currentImageUrl = null;
-    let currentMode = 'normal';
+    let currentImageMap = null;
+    let imageMapCache = new Map();
+    let currentMode = 'normal'; // 'normal' | 'maximized' | 'halfMaximized'
     let preNormalState = { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, left: DEFAULT_LEFT, top: DEFAULT_TOP };
-    let isDragging = false, isResizing = false, offsetX, offsetY, isCustomWindowOpen = false;
-    const imageMapCache = new Map();
-    let isDefaultImageFailed = false;
-    let currentTextMode = 'user'; // 'user' または 'ai'
-    let streamingTimer = null;
-    let lastStreamingText = '';
-    const STREAMING_DELAY = 500;
-    let chatDomObserver = null;
+    let currentTextMode = 'ai'; // 'ai' | 'user'
+    let isCustomWindowOpen = false;
+    let isDragging = false;
+    let isResizing = false;
+    let offsetX = 0;
+    let offsetY = 0;
+    let currentDisplayedSrc = '';
 
-    // デバウンス処理
-    function debounce(func, wait) {
-        let timeout;
-        return function executedFunction(...args) {
-            clearTimeout(timeout);
-            timeout = setTimeout(() => func(...args), wait);
-        };
-    }
-
-    // --- 拡張子自動検出関数（動画・画像対応） ---
-    const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp', 'mp4', 'webm'];
-
-    function isVideoUrl(url) {
-        if (!url || typeof url !== 'string') return false;
-        return !!url.match(/\.(mp4|webm)$/i);
-    }
-
-    async function detectImageExtension(imagePath) {
-        if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
-        const cleanPath = imagePath.trim();
-        if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            return cleanPath;
+    // ==========================================
+    // 2. CSSスタイルの動的注入
+    // ==========================================
+    const styleElement = document.createElement('style');
+    styleElement.id = 'image-display-styles';
+    styleElement.textContent = `
+        #image-display-container {
+            position: absolute;
+            width: ${DEFAULT_WIDTH}px;
+            height: ${DEFAULT_HEIGHT}px;
+            left: ${DEFAULT_LEFT}px;
+            top: ${DEFAULT_TOP}px;
+            background-color: ${DEFAULT_BG_COLOR};
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid #444;
+            box-sizing: border-box;
+            overflow: hidden;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+            transition: border-color 0.2s ease;
         }
-        for (const ext of ALLOWED_EXTENSIONS) {
-            const imagePathWithExt = `${cleanPath}.${ext}`;
-            const exists = await checkMediaExists(imagePathWithExt);
-            if (exists) {
-                console.log(`✅ 拡張子自動検出: ${imagePathWithExt}`);
-                return imagePathWithExt;
-            }
+        #image-display-container.dragging {
+            opacity: 0.85;
+            user-select: none;
         }
-        console.warn(`⚠ メディアが見つかりません: ${cleanPath}`);
-        return null;
-    }
-
-    // 高速チェック＆キャッシュ付きメディア確認
-    function checkMediaExists(mediaUrl) {
-        if (mediaExistsCache.has(mediaUrl)) {
-            return Promise.resolve(mediaExistsCache.get(mediaUrl));
+        #image-display-container.resizing {
+            user-select: none;
         }
-
-        return new Promise((resolve) => {
-            if (!mediaUrl || typeof mediaUrl !== 'string' || !mediaUrl.trim()) {
-                mediaExistsCache.set(mediaUrl, false);
-                return resolve(false);
-            }
-            const cleanUrl = mediaUrl.trim();
-
-            if (isVideoUrl(cleanUrl)) {
-                const video = document.createElement('video');
-                video.preload = 'metadata';
-                video.onloadedmetadata = () => {
-                    mediaExistsCache.set(cleanUrl, true);
-                    resolve(true);
-                };
-                video.onerror = () => {
-                    mediaExistsCache.set(cleanUrl, false);
-                    resolve(false);
-                };
-                video.src = cleanUrl;
-            } else {
-                const img = new Image();
-                img.onload = () => {
-                    mediaExistsCache.set(cleanUrl, true);
-                    resolve(true);
-                };
-                img.onerror = () => {
-                    mediaExistsCache.set(cleanUrl, false);
-                    resolve(false);
-                };
-                img.src = cleanUrl;
-            }
-        });
-    }
-
-    async function detectImageMapExtensions(imageMap) {
-        if (!imageMap) return imageMap;
-        const detectedMap = {};
-        for (const [key, value] of Object.entries(imageMap)) {
-            if (Array.isArray(value)) {
-                const detectedArray = [];
-                for (const imagePath of value) {
-                    const detectedPath = await detectImageExtension(imagePath);
-                    if (detectedPath) {
-                        detectedArray.push(detectedPath);
-                    }
-                }
-                detectedMap[key] = detectedArray.length > 0 ? detectedArray : value;
-            } else if (typeof value === 'string') {
-                const detectedPath = await detectImageExtension(value);
-                detectedMap[key] = detectedPath || value;
-            } else {
-                detectedMap[key] = value;
-            }
+        #image-display-header {
+            height: 28px;
+            background: rgba(30, 30, 30, 0.9);
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding: 0 6px;
+            cursor: grab;
+            user-select: none;
+            gap: 6px;
+            border-bottom: 1px solid #333;
+            box-sizing: border-box;
         }
-        return detectedMap;
-    }
+        #image-display-header:active {
+            cursor: grabbing;
+        }
+        .image-display-btn {
+            background: #333;
+            color: #eee;
+            border: 1px solid #555;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            padding: 2px 6px;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+        .image-display-btn:hover {
+            background: #444;
+            border-color: #777;
+            color: #fff;
+        }
+        .image-display-btn.disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+        .image-display-btn.enabled {
+            opacity: 1;
+            cursor: pointer;
+        }
+        #image-display-media-wrapper {
+            flex: 1;
+            width: 100%;
+            height: calc(100% - 28px);
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+        }
+        #image-display-media-wrapper img,
+        #image-display-media-wrapper video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            pointer-events: none;
+            display: block;
+        }
+        #image-display-resize-handle {
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            width: 14px;
+            height: 14px;
+            cursor: se-resize;
+            z-index: 10000;
+            background: linear-gradient(135deg, transparent 50%, #888 50%);
+            border-bottom-right-radius: 5px;
+        }
+        #image-display-custom-window {
+            position: absolute;
+            top: 35px;
+            right: 10px;
+            background: rgba(20, 20, 20, 0.95);
+            border: 1px solid #555;
+            border-radius: 6px;
+            padding: 10px;
+            color: #fff;
+            font-size: 12px;
+            z-index: 10001;
+            display: none;
+            flex-direction: column;
+            gap: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.8);
+            width: 180px;
+            box-sizing: border-box;
+        }
+        .custom-window-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+        }
+        .custom-window-input {
+            width: 65px;
+            background: #2a2a2a;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 3px;
+            padding: 2px 4px;
+            font-size: 11px;
+            text-align: right;
+        }
+        .custom-window-input:focus {
+            outline: none;
+            border-color: #888;
+        }
+    `;
+    document.head.appendChild(styleElement);
 
-    // --- UI要素の作成 ---
+    // ==========================================
+    // 3. UIコンポーネントの構築
+    // ==========================================
     const imageContainer = document.createElement('div');
     imageContainer.id = 'image-display-container';
-    document.body.appendChild(imageContainer);
 
     const header = document.createElement('div');
     header.id = 'image-display-header';
-    header.textContent = 'メディア表示エリア (ドラッグで移動)';
-    imageContainer.appendChild(header);
 
     const colorPicker = document.createElement('input');
     colorPicker.type = 'color';
-    colorPicker.id = 'bg-color-picker';
     colorPicker.value = DEFAULT_BG_COLOR;
     colorPicker.title = '背景色を変更';
-    header.appendChild(colorPicker);
-
-    // メディア表示用コンテナ
-    const mediaContainer = document.createElement('div');
-    mediaContainer.id = 'media-element-container';
-    mediaContainer.style.width = '100%';
-    mediaContainer.style.height = 'calc(100% - 30px)';
-    imageContainer.appendChild(mediaContainer);
-
-    const resizeHandle = document.createElement('div');
-    resizeHandle.id = 'resize-handle';
-    imageContainer.appendChild(resizeHandle);
-
-    // コントロールボタンコンテナ
-    const controlContainer = document.createElement('div');
-    controlContainer.id = 'image-control-container';
-    document.body.appendChild(controlContainer);
+    colorPicker.style.cssText = 'width: 20px; height: 20px; border: none; background: none; cursor: pointer; padding: 0;';
 
     const textModeButton = document.createElement('button');
-    textModeButton.id = 'text-mode-button';
-    textModeButton.textContent = 'UT';
-    textModeButton.title = 'クリックでテキストモード切り替え（現在: ユーザー）';
-    controlContainer.appendChild(textModeButton);
+    textModeButton.className = 'image-display-btn';
+    textModeButton.textContent = 'AI';
+    textModeButton.title = 'クリックでテキストモード切り替え（現在: AI）';
 
     const customButton = document.createElement('button');
-    customButton.id = 'custom-button';
-    customButton.textContent = 'カスタム';
-    customButton.title = '位置とサイズを手動設定';
-    controlContainer.appendChild(customButton);
-
-    const maximizeButton = document.createElement('button');
-    maximizeButton.id = 'maximize-button';
-    maximizeButton.textContent = '全画面';
-    maximizeButton.title = '全画面モードに切替';
-    maximizeButton.classList.add('enabled');
-    controlContainer.appendChild(maximizeButton);
+    customButton.className = 'image-display-btn';
+    customButton.textContent = '⚙';
+    customButton.title = 'カスタムサイズ設定';
 
     const halfMaximizeButton = document.createElement('button');
-    halfMaximizeButton.id = 'half-maximize-button';
-    halfMaximizeButton.textContent = '左半分';
-    halfMaximizeButton.title = '左半分モードに切替';
-    halfMaximizeButton.classList.add('enabled');
-    controlContainer.appendChild(halfMaximizeButton);
+    halfMaximizeButton.className = 'image-display-btn enabled';
+    halfMaximizeButton.textContent = '◐';
+    halfMaximizeButton.title = '画面左半分に固定';
 
-    // カスタム設定ウィンドウ
+    const maximizeButton = document.createElement('button');
+    maximizeButton.className = 'image-display-btn enabled';
+    maximizeButton.textContent = '⛶';
+    maximizeButton.title = '全画面表示';
+
+    header.appendChild(colorPicker);
+    header.appendChild(textModeButton);
+    header.appendChild(customButton);
+    header.appendChild(halfMaximizeButton);
+    header.appendChild(maximizeButton);
+
+    const mediaWrapper = document.createElement('div');
+    mediaWrapper.id = 'image-display-media-wrapper';
+
+    const resizeHandle = document.createElement('div');
+    resizeHandle.id = 'image-display-resize-handle';
+
+    imageContainer.appendChild(header);
+    imageContainer.appendChild(mediaWrapper);
+    imageContainer.appendChild(resizeHandle);
+
+    // カスタムウィンドウ作成
     const customWindow = document.createElement('div');
-    customWindow.id = 'custom-window';
+    customWindow.id = 'image-display-custom-window';
     customWindow.innerHTML = `
-        <h3>位置・サイズの設定</h3>
-        <label>幅 (px): <input type="number" id="custom-width" min="100"></label>
-        <label>高さ (px): <input type="number" id="custom-height" min="100"></label>
-        <label>X位置 (px): <input type="number" id="custom-left"></label>
-        <label>Y位置 (px): <input type="number" id="custom-top"></label>
-        <button class="close-button" id="close-custom-window">閉じる</button>
+        <div style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:4px; border-bottom:1px solid #444; padding-bottom:4px;">
+            <span>サイズ・位置指定</span>
+            <span id="close-custom-window" style="cursor:pointer; padding:0 4px; font-size:14px; color:#aaa;">×</span>
+        </div>
+        <div class="custom-window-row"><span>幅 (W):</span><input type="number" id="custom-width" class="custom-window-input"> px</div>
+        <div class="custom-window-row"><span>高 (H):</span><input type="number" id="custom-height" class="custom-window-input"> px</div>
+        <div class="custom-window-row"><span>左 (L):</span><input type="number" id="custom-left" class="custom-window-input"> px</div>
+        <div class="custom-window-row"><span>上 (T):</span><input type="number" id="custom-top" class="custom-window-input"> px</div>
     `;
-    document.body.appendChild(customWindow);
+    imageContainer.appendChild(customWindow);
+    document.body.appendChild(imageContainer);
 
-    // --- 条件評価・キーワードロジック ---
-    function evaluateBasicCondition(condStr, text) {
-        let trimmed = condStr.trim();
-        if (!trimmed) return false;
-        let isNegative = false;
-        if (trimmed.startsWith('NOT ') || trimmed.startsWith('not ')) {
-            isNegative = true;
-            trimmed = trimmed.substring(4).trim();
+    // ==========================================
+    // 4. パスの正規化・探査無効化ロジック (404探査完全無効化)
+    // ==========================================
+    function normalizeMediaPath(path) {
+        if (!path || typeof path !== 'string') return '';
+        const trimmed = path.trim();
+        if (!trimmed) return '';
+
+        // 拡張子が既にある場合は fetch/HEAD 等の探査を行わず即時返却
+        const hasExtension = /\.(mp4|webm|png|jpg|jpeg|webp|gif|avif|bmp)$/i.test(trimmed);
+        if (hasExtension) {
+            return trimmed;
         }
-        
-        // カンマ区切りによるOR評価に対応 (例: "www,ttt")
-        const terms = trimmed.split(',').map(t => t.trim()).filter(t => t);
-        const matches = terms.some(term => text.toLowerCase().includes(term.toLowerCase()));
-        
-        return isNegative ? !matches : matches;
+
+        // 拡張子がない場合は探査を行わず即座にデフォルト拡張子(.mp4)を直接補完
+        return `${trimmed}${DEFAULT_EXT}`;
     }
 
-    function processAnd(expr, text) {
-        const parts = expr.split(/\s+and\s+/i);
-        for (const part of parts) {
-            if (!evaluateBasicCondition(part, text)) return false;
-        }
-        return true;
-    }
-
-    function processOr(expr, text) {
-        const parts = expr.split(/\s+or\s+/i);
-        for (const part of parts) {
-            if (processAnd(part, text)) return true;
-        }
-        return false;
-    }
-
-    function evaluateCondition(condStr, text) {
-        if (!condStr || !text) return false;
-        let processed = condStr;
-        if (processed.includes('or')) return processOr(processed, text);
-        if (processed.includes('and')) return processAnd(processed, text);
-        return evaluateBasicCondition(processed, text);
-    }
-
-    function getRandomImageSource(imageSource) {
-        if (Array.isArray(imageSource)) {
-            if (imageSource.length === 0) return null;
-            const validSources = imageSource.filter(src => typeof src === 'string' && src.trim() !== '');
-            if (validSources.length === 0) return null;
-            const randomIndex = Math.floor(Math.random() * validSources.length);
-            return validSources[randomIndex];
-        }
-        return (typeof imageSource === 'string' && imageSource.trim() !== '') ? imageSource : null;
-    }
-
-    function findMatchingImageUrl(text) {
-        if (!text || !currentImageMap) return null;
-        const keywordEntries = Object.entries(currentImageMap)
-            .filter(([key]) => key !== "default" && key !== "thumbnail")
-            .map(([key, url]) => ({
-                condition: key,
-                url: url,
-                complexity: (key.match(/and/g) || []).length * 10 + (key.match(/or/g) || []).length * 5 + key.length
-            }))
-            .sort((a, b) => b.complexity - a.complexity);
-
-        for (const entry of keywordEntries) {
-            try {
-                if (evaluateCondition(entry.condition, text)) {
-                    const selected = getRandomImageSource(entry.url);
-                    if (selected) return selected;
+    // 総当たり探査を行わない高速化マップ変換処理
+    async function detectImageMapExtensions(map) {
+        if (!map || typeof map !== 'object') return null;
+        const normalized = {};
+        for (const key in map) {
+            if (Object.prototype.hasOwnProperty.call(map, key)) {
+                const val = map[key];
+                if (Array.isArray(val)) {
+                    normalized[key] = val.map(p => normalizeMediaPath(p)).filter(Boolean);
+                } else if (typeof val === 'string') {
+                    normalized[key] = normalizeMediaPath(val);
+                } else {
+                    normalized[key] = val;
                 }
-            } catch (error) {
-                console.error(`❌ 条件評価エラー "${entry.condition}":`, error);
             }
         }
-        return null;
+        return normalized;
     }
 
-    function findLastKeywordImage() {
-        const isUserMode = currentTextMode === 'user';
-        const selector = `.mes[is_user="${isUserMode}"] .mes_text`;
-        const messages = Array.from(document.querySelectorAll(selector));
-        for (let i = messages.length - 1; i >= 0; i--) {
-            const textContent = messages[i].textContent || messages[i].innerText || "";
-            const mediaUrl = findMatchingImageUrl(textContent);
-            if (mediaUrl) return mediaUrl;
-        }
-        return null;
-    }
-
-    // --- メディア表示更新処理（チラつき防止修正版） ---
-    async function updateImage() {
-        if (isDefaultImageFailed) return;
-        const keywordMedia = findLastKeywordImage();
-        let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
-
-        if (!newUrl || typeof newUrl !== 'string' || newUrl.trim() === '') {
-            return;
-        }
-        newUrl = newUrl.trim();
-
-        // 拡張子が含まれていない場合は自動検出を実施
-        if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            const detected = await detectImageExtension(newUrl);
-            if (detected) {
-                newUrl = detected;
-            }
-        }
-
-        // 表示パスが変わらない場合、かつコンテナ内に既にメディアが存在する場合はスキップ
-        if (currentImageUrl === newUrl && mediaContainer.children.length > 0) {
+    // ==========================================
+    // 5. メディア描画＆空URI完全ガード
+    // ==========================================
+    function setMediaSource(srcPath) {
+        // 【空文字・空白・null・undefinedの完全ガード】
+        if (!srcPath || typeof srcPath !== 'string' || !srcPath.trim()) {
+            console.warn('[Image Display] 空のURIまたは無効なパスが指定されたため設定をスキップしました。');
             return;
         }
 
-        console.log(`🖼 メディアを更新: ${newUrl}`);
-        currentImageUrl = newUrl;
+        const cleanSrc = srcPath.trim();
+        if (currentDisplayedSrc === cleanSrc) return;
 
-        // 【修正点】画像読み込み中の前画像チラつきを防止するため、描画前にコンテナを一旦空にする
-        mediaContainer.innerHTML = '';
+        currentDisplayedSrc = cleanSrc;
+        mediaWrapper.innerHTML = '';
 
-        if (isVideoUrl(newUrl)) {
-            const videoElement = document.createElement('video');
-            videoElement.src = newUrl;
-            videoElement.autoplay = true;
-            videoElement.loop = true;
-            videoElement.muted = true;
-            videoElement.playsInline = true;
-            videoElement.preload = 'auto';
-            videoElement.style.width = '100%';
-            videoElement.style.height = '100%';
-            videoElement.style.objectFit = 'contain';
-            videoElement.onerror = () => handleMediaError(videoElement, newUrl);
-            mediaContainer.appendChild(videoElement);
-            videoElement.play().catch(() => {});
+        const isVideo = /\.(mp4|webm)$/i.test(cleanSrc);
+
+        if (isVideo) {
+            const video = document.createElement('video');
+            video.src = cleanSrc;
+            video.autoplay = true;
+            video.loop = true;
+            video.muted = true;
+            video.playsInline = true;
+            video.play().catch(e => console.warn('[Image Display] 動画再生エラー:', e));
+            mediaWrapper.appendChild(video);
         } else {
-            // 【修正点】メモリ上でプレロードし、準備完了後にDOMへ挿入することで前画像のチラつきを解消
-            const imgElement = document.createElement('img');
-            imgElement.style.width = '100%';
-            imgElement.style.height = '100%';
-            imgElement.style.objectFit = 'contain';
-
-            imgElement.onload = () => {
-                // プレロード完了時にURLが途中で変わっていなければDOMへ追加
-                if (currentImageUrl === newUrl) {
-                    mediaContainer.innerHTML = '';
-                    mediaContainer.appendChild(imgElement);
-                }
-            };
-            imgElement.onerror = () => handleMediaError(imgElement, newUrl);
-            imgElement.src = newUrl;
+            const img = document.createElement('img');
+            img.src = cleanSrc;
+            mediaWrapper.appendChild(img);
         }
     }
 
-    // 描画遅延付きで画面を更新する関数
+    // ==========================================
+    // 6. テキスト解析・画像選択
+    // ==========================================
+    function selectImageFromText(text) {
+        if (!currentImageMap) return null;
+
+        for (const key in currentImageMap) {
+            if (key === 'default') continue;
+            if (text && text.includes(key)) {
+                const item = currentImageMap[key];
+                if (Array.isArray(item) && item.length > 0) {
+                    return item[Math.floor(Math.random() * item.length)];
+                } else if (typeof item === 'string') {
+                    return item;
+                }
+            }
+        }
+
+        const def = currentImageMap.default;
+        if (Array.isArray(def) && def.length > 0) {
+            return def[0];
+        } else if (typeof def === 'string') {
+            return def;
+        }
+        return null;
+    }
+
     function safeUpdateImage() {
-        setTimeout(() => {
-            updateImage();
-        }, 50);
-    }
+        let textToAnalyze = '';
+        const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
 
-    async function handleMediaError(element, src) {
-        console.error("メディアの読み込みに失敗しました:", src);
-        if (src && !src.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            const detectedPath = await detectImageExtension(src);
-            if (detectedPath) {
-                element.src = detectedPath;
-                if (isVideoUrl(detectedPath) && element.tagName.toLowerCase() === 'video') {
-                    element.play().catch(() => {});
-                }
-                return;
-            }
-        }
-        if (src && (src.match(/default\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i) || src.endsWith('/default'))) {
-            isDefaultImageFailed = true;
-            console.warn("⚠ デフォルトメディアが見つかりません。表示を無効化します");
-            mediaContainer.style.display = 'none';
-        } else {
-            const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
-            if (fallback && fallback !== src) {
-                element.src = fallback;
-                if (isVideoUrl(fallback) && element.tagName.toLowerCase() === 'video') {
-                    element.play().catch(() => {});
+        if (context && context.chat && context.chat.length > 0) {
+            const lastMsg = context.chat[context.chat.length - 1];
+            if (lastMsg) {
+                if (currentTextMode === 'ai' && !lastMsg.is_user) {
+                    textToAnalyze = lastMsg.text || '';
+                } else if (currentTextMode === 'user' && lastMsg.is_user) {
+                    textToAnalyze = lastMsg.text || '';
                 }
             }
         }
+
+        const targetSrc = selectImageFromText(textToAnalyze);
+        if (targetSrc) {
+            setMediaSource(targetSrc);
+        }
     }
 
-    // --- テキストモード切り替え ---
-    function toggleTextMode() {
-        currentTextMode = currentTextMode === 'user' ? 'ai' : 'user';
-        textModeButton.textContent = currentTextMode === 'user' ? 'UT' : 'AI';
-        textModeButton.title = `クリックでテキストモード切り替え（現在: ${currentTextMode === 'user' ? 'ユーザー' : 'AI'}）`;
-        console.log(`🔄 テキストモード切替: ${currentTextMode}`);
-        saveDisplayState();
-        safeUpdateImage();
-    }
-    textModeButton.addEventListener('click', toggleTextMode);
-
-    // --- ストリーミング監視 ---
-    function handleStreamingUpdate() {
+    function handleStreamingUpdate(data) {
         if (currentTextMode !== 'ai') return;
-        const lastAiMessage = document.querySelector('.mes[is_user="false"]:last-child .mes_text');
-        if (!lastAiMessage) return;
-
-        const currentText = lastAiMessage.textContent;
-        if (currentText === lastStreamingText) return;
-        lastStreamingText = currentText;
-
-        if (streamingTimer) clearTimeout(streamingTimer);
-        streamingTimer = setTimeout(() => {
-            safeUpdateImage();
-        }, STREAMING_DELAY);
+        const text = typeof data === 'string' ? data : (data && data.text ? data.text : '');
+        if (text) {
+            const targetSrc = selectImageFromText(text);
+            if (targetSrc) setMediaSource(targetSrc);
+        }
     }
 
     function setupChatDomObserver() {
-        const chatContainer = document.querySelector('#chat');
-        if (!chatContainer) return;
-        if (chatDomObserver) chatDomObserver.disconnect();
-
-        const debouncedUpdate = debounce(() => {
-            handleStreamingUpdate();
+        const chatEl = document.querySelector('#chat, .chat-scroll, #chat-body');
+        if (!chatEl) return;
+        const observer = new MutationObserver(() => {
             safeUpdateImage();
-        }, 150);
-
-        chatDomObserver = new MutationObserver((mutations) => {
-            debouncedUpdate();
         });
-
-        chatDomObserver.observe(chatContainer, {
-            childList: true,
-            subtree: true,
-            characterData: true
-        });
+        observer.observe(chatEl, { childList: true, subtree: true });
     }
 
-    // --- キャラクターデータの読み込み ---
+    // ==========================================
+    // 7. キャラクターデータの読み込み (_ext.json 優先取得)
+    // ==========================================
     function findImageMapInData(data) {
         if (data === null || typeof data !== 'object') return null;
         if (data.hasOwnProperty('image_display_extension')) {
@@ -482,14 +436,14 @@
         const charName = getCharacterNameFromDOM();
 
         if (!charName) {
-            if (currentImageMap === defaultImageMap) {
+            if (currentImageMap === defaultImageMap || !currentImageMap) {
                 currentImageMap = await detectImageMapExtensions(defaultImageMap);
                 safeUpdateImage();
             }
             return;
         }
 
-        if (!forceRefresh && currentCharacter === charName && currentImageMap !== defaultImageMap) {
+        if (!forceRefresh && currentCharacter === charName && currentImageMap !== defaultImageMap && currentImageMap) {
             return;
         }
 
@@ -504,6 +458,7 @@
 
         let loadedMap = null;
         try {
+            // _ext.json の優先・先行直接取得
             const extPath = `addchara/${charName}/${charName}_ext.json`;
             const resp = await fetch(extPath);
             if (resp.ok) {
@@ -531,7 +486,9 @@
         safeUpdateImage();
     }
 
-    // --- カスタムウィンドウの制御 ---
+    // ==========================================
+    // 8. カスタムウィンドウの制御
+    // ==========================================
     function toggleCustomWindow() {
         if (isCustomWindowOpen) {
             closeCustomWindow();
@@ -546,7 +503,7 @@
         document.getElementById('custom-height').value = imageContainer.offsetHeight;
         document.getElementById('custom-left').value = parseInt(imageContainer.style.left) || DEFAULT_LEFT;
         document.getElementById('custom-top').value = parseInt(imageContainer.style.top) || DEFAULT_TOP;
-        customWindow.style.display = 'block';
+        customWindow.style.display = 'flex';
         isCustomWindowOpen = true;
     }
 
@@ -566,6 +523,14 @@
     customButton.addEventListener('click', toggleCustomWindow);
     document.getElementById('close-custom-window').addEventListener('click', closeCustomWindow);
 
+    textModeButton.addEventListener('click', () => {
+        currentTextMode = currentTextMode === 'ai' ? 'user' : 'ai';
+        textModeButton.textContent = currentTextMode === 'user' ? 'UT' : 'AI';
+        textModeButton.title = `クリックでテキストモード切り替え（現在: ${currentTextMode === 'user' ? 'ユーザー' : 'AI'}）`;
+        saveDisplayState();
+        safeUpdateImage();
+    });
+
     ['custom-width', 'custom-height', 'custom-left', 'custom-top'].forEach(id => {
         document.getElementById(id).addEventListener('input', () => {
             if (currentMode !== 'normal') return;
@@ -583,7 +548,9 @@
         });
     });
 
-    // --- 状態の永続化・復元 ---
+    // ==========================================
+    // 9. 状態の永続化・復元・モード切替
+    // ==========================================
     function saveDisplayState() {
         const state = {
             preNormalState,
@@ -719,7 +686,7 @@
         resizeHandle.style.display = 'none';
         header.style.cursor = 'default';
         imageContainer.classList.add('half-maximized');
-        maximizeButton.classList.remove('enabled');
+        maximizeButton.classList.remove('disabled');
         maximizeButton.classList.add('enabled');
         halfMaximizeButton.classList.remove('disabled');
         halfMaximizeButton.classList.add('disabled');
@@ -728,7 +695,9 @@
 
     restoreDisplayState();
 
-    // --- イベントリスナー設定 ---
+    // ==========================================
+    // 10. イベントリスナー・操作イベントの設定
+    // ==========================================
     colorPicker.addEventListener('input', () => {
         imageContainer.style.backgroundColor = colorPicker.value;
         saveDisplayState();
@@ -749,7 +718,7 @@
     });
 
     header.addEventListener('mousedown', (e) => {
-        if (e.target === colorPicker || currentMode !== 'normal') return;
+        if (e.target === colorPicker || e.target.tagName === 'BUTTON' || currentMode !== 'normal') return;
         isDragging = true;
         offsetX = e.clientX - imageContainer.getBoundingClientRect().left;
         offsetY = e.clientY - imageContainer.getBoundingClientRect().top;
@@ -819,7 +788,9 @@
         }
     });
 
-    // --- EventSource 安全監視 ---
+    // ==========================================
+    // 11. EventSource 安全監視＆初期化
+    // ==========================================
     function setupEventSourceListeners() {
         if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
             const context = SillyTavern.getContext();
@@ -848,7 +819,7 @@
         }
     }
 
-    // --- 初期ロードとポーリング ---
+    // 初期ロード実行
     setupEventSourceListeners();
     loadCharacterData(true);
     setupChatDomObserver();
