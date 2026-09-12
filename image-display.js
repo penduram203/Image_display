@@ -41,70 +41,86 @@
     }
 
     async function detectImageExtension(imagePath) {
-        if (!imagePath) return imagePath;
-    
-        // すでに拡張子がついている場合はそのまま返す
-        const hasExt = /\.(png|jpg|jpeg|webp|gif|mp4|webm|m4v)$/i.test(imagePath);
-        if (hasExt) {
-            return imagePath;
+        if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
+        const cleanPath = imagePath.trim();
+        if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
+            return cleanPath;
         }
-
-        // 代表的な拡張子を効率よくチェック（または優先順位を絞る）
-        const extensions = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
-        for (const ext of extensions) {
-            const testUrl = `${imagePath}.${ext}`;
-            if (await checkMediaExists(testUrl)) {
-                return testUrl;
+        for (const ext of ALLOWED_EXTENSIONS) {
+            const imagePathWithExt = `${cleanPath}.${ext}`;
+            const exists = await checkMediaExists(imagePathWithExt);
+            if (exists) {
+                console.log(`✅ 拡張子自動検出: ${imagePathWithExt}`);
+                return imagePathWithExt;
             }
         }
-
-        // 見つからない場合はデフォルトで .png を付与してフォールバック
-        return `${imagePath}.png`;
+        console.warn(`⚠ メディアが見つかりません: ${cleanPath}`);
+        return null;
     }
 
-    const extensionCache = new Map();
+    // 高速チェック＆キャッシュ付きメディア確認
+    function checkMediaExists(mediaUrl) {
+        if (mediaExistsCache.has(mediaUrl)) {
+            return Promise.resolve(mediaExistsCache.get(mediaUrl));
+        }
 
-    async function checkMediaExists(url) {
-        if (extensionCache.has(url)) {
-            return extensionCache.get(url);
-        }
-        try {
-            // 404などのエラーログをコンソールに余計に出さないよう配慮した確認
-            const response = await fetch(url, { method: 'HEAD' });
-            const exists = response.ok;
-            extensionCache.set(url, exists);
-            return exists;
-        } catch (e) {
-            extensionCache.set(url, false);
-            return false;
-        }
+        return new Promise((resolve) => {
+            if (!mediaUrl || typeof mediaUrl !== 'string' || !mediaUrl.trim()) {
+                mediaExistsCache.set(mediaUrl, false);
+                return resolve(false);
+            }
+            const cleanUrl = mediaUrl.trim();
+
+            if (isVideoUrl(cleanUrl)) {
+                const video = document.createElement('video');
+                video.preload = 'metadata';
+                video.onloadedmetadata = () => {
+                    mediaExistsCache.set(cleanUrl, true);
+                    resolve(true);
+                };
+                video.onerror = () => {
+                    mediaExistsCache.set(cleanUrl, false);
+                    resolve(false);
+                };
+                video.src = cleanUrl;
+            } else {
+                const img = new Image();
+                img.onload = () => {
+                    mediaExistsCache.set(cleanUrl, true);
+                    resolve(true);
+                };
+                img.onerror = () => {
+                    mediaExistsCache.set(cleanUrl, false);
+                    resolve(false);
+                };
+                img.src = cleanUrl;
+            }
+        });
     }
 
-
-    async function detectImageMapExtensions(map) {
-        if (!map || typeof map !== 'object') return map;
-        const newMap = Array.isArray(map) ? [] : {};
-    
-        for (const key in map) {
-            if (Object.prototype.hasOwnProperty.call(map, key)) {
-                const val = map[key];
-                if (typeof val === 'string') {
-                    // パスらしき文字列の場合のみ拡張子補完を走らせる
-                    if (!val.startsWith('http') && !val.startsWith('data:') && !/\.[a-zA-Z0-9]+$/.test(val)) {
-                        newMap[key] = await detectImageExtension(val);
-                    } else {
-                        newMap[key] = val;
+    async function detectImageMapExtensions(imageMap) {
+        if (!imageMap) return imageMap;
+        const detectedMap = {};
+        for (const [key, value] of Object.entries(imageMap)) {
+            if (Array.isArray(value)) {
+                const detectedArray = [];
+                for (const imagePath of value) {
+                    const detectedPath = await detectImageExtension(imagePath);
+                    if (detectedPath) {
+                        detectedArray.push(detectedPath);
                     }
-                } else if (typeof val === 'object' && val !== null) {
-                    newMap[key] = await detectImageMapExtensions(val);
-                } else {
-                    newMap[key] = val;
                 }
+                detectedMap[key] = detectedArray.length > 0 ? detectedArray : value;
+            } else if (typeof value === 'string') {
+                const detectedPath = await detectImageExtension(value);
+                detectedMap[key] = detectedPath || value;
+            } else {
+                detectedMap[key] = value;
             }
         }
-        return newMap;
+        return detectedMap;
     }
-    
+
     // --- UI要素の作成 ---
     const imageContainer = document.createElement('div');
     imageContainer.id = 'image-display-container';
