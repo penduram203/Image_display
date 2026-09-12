@@ -39,60 +39,59 @@
         return !!url.match(/\.(mp4|webm)$/i);
     }
 
-    function checkMediaExists(mediaUrl) {
-        if (mediaExistsCache.has(mediaUrl)) {
-            return Promise.resolve(mediaExistsCache.get(mediaUrl));
+    // HEAD/GETリクエストによるメディア存在確認（ログ汚染とエラーを防止）
+    async function checkMediaExists(mediaUrl) {
+        if (!mediaUrl || typeof mediaUrl !== 'string' || !mediaUrl.trim()) {
+            return false;
+        }
+        const cleanUrl = mediaUrl.trim();
+        if (mediaExistsCache.has(cleanUrl)) {
+            return mediaExistsCache.get(cleanUrl);
         }
 
-        return new Promise((resolve) => {
-            if (!mediaUrl || typeof mediaUrl !== 'string' || !mediaUrl.trim()) {
-                mediaExistsCache.set(mediaUrl, false);
-                return resolve(false);
-            }
-            const cleanUrl = mediaUrl.trim();
-
-            if (isVideoUrl(cleanUrl)) {
-                const video = document.createElement('video');
-                video.preload = 'metadata';
-                video.onloadedmetadata = () => {
-                    mediaExistsCache.set(cleanUrl, true);
-                    resolve(true);
-                };
-                video.onerror = () => {
-                    mediaExistsCache.set(cleanUrl, false);
-                    resolve(false);
-                };
-                video.src = cleanUrl;
-            } else {
-                const img = new Image();
-                img.onload = () => {
-                    mediaExistsCache.set(cleanUrl, true);
-                    resolve(true);
-                };
-                img.onerror = () => {
-                    mediaExistsCache.set(cleanUrl, false);
-                    resolve(false);
-                };
-                img.src = cleanUrl;
-            }
-        });
+        try {
+            const response = await fetch(cleanUrl, { method: 'HEAD' });
+            const exists = response.ok;
+            mediaExistsCache.set(cleanUrl, exists);
+            return exists;
+        } catch (e) {
+            // HEADリクエストが拒否される環境向けフォールバック
+            return new Promise((resolve) => {
+                if (isVideoUrl(cleanUrl)) {
+                    const video = document.createElement('video');
+                    video.onloadedmetadata = () => { mediaExistsCache.set(cleanUrl, true); resolve(true); };
+                    video.onerror = () => { mediaExistsCache.set(cleanUrl, false); resolve(false); };
+                    video.src = cleanUrl;
+                } else {
+                    const img = new Image();
+                    img.onload = () => { mediaExistsCache.set(cleanUrl, true); resolve(true); };
+                    img.onerror = () => { mediaExistsCache.set(cleanUrl, false); resolve(false); };
+                    img.src = cleanUrl;
+                }
+            });
+        }
     }
 
     async function detectImageExtension(imagePath) {
         if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
         const cleanPath = imagePath.trim();
+        
+        // 既に拡張子が含まれている場合
         if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            return cleanPath;
+            const exists = await checkMediaExists(cleanPath);
+            return exists ? cleanPath : null;
         }
+
+        // 各拡張子を順番に探索
         for (const ext of ALLOWED_EXTENSIONS) {
-            const imagePathWithExt = `${cleanPath}.${ext}`;
-            const exists = await checkMediaExists(imagePathWithExt);
+            const pathWithExt = `${cleanPath}.${ext}`;
+            const exists = await checkMediaExists(pathWithExt);
             if (exists) {
-                console.log(`✅ 拡張子自動検出成功: ${imagePathWithExt}`);
-                return imagePathWithExt;
+                console.log(`✅ 拡張子自動検出成功: ${pathWithExt}`);
+                return pathWithExt;
             }
         }
-        console.warn(`⚠ メディアが存在しません: ${cleanPath}`);
+        console.warn(`⚠ 有効なメディアが見つかりませんでした: ${cleanPath}`);
         return null;
     }
 
@@ -286,17 +285,23 @@
     // --- メディア表示更新処理 ---
     async function updateImage(overrideText = null) {
         const keywordMedia = findLastKeywordImage(overrideText);
-        let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
+        let rawUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
 
-        if (!newUrl || typeof newUrl !== 'string' || newUrl.trim() === '') {
+        if (!rawUrl || typeof rawUrl !== 'string' || !rawUrl.trim()) {
+            console.warn("⚠ 表示対象のメディアURLが定義されていません。");
             return;
         }
-        newUrl = newUrl.trim();
 
+        let newUrl = rawUrl.trim();
+
+        // 拡張子補完処理
         if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             const detected = await detectImageExtension(newUrl);
             if (detected) {
                 newUrl = detected;
+            } else {
+                console.warn(`⚠ 有効なファイルが存在しないため描画を中断: ${newUrl}`);
+                return;
             }
         }
 
@@ -304,7 +309,7 @@
             return;
         }
 
-        console.log(`🖼 メディアを更新: ${newUrl}`);
+        console.log(`🖼 メディアを表示描画中: ${newUrl}`);
         currentImageUrl = newUrl;
         mediaContainer.innerHTML = '';
 
@@ -335,7 +340,7 @@
         updateImage(overrideText);
     }
 
-    // --- 送信直後の前倒しトリガーの準備 ---
+    // --- 送信直後の前倒しトリガー ---
     function setupFastSubmitTrigger() {
         const sendButton = document.querySelector('#send_textarea, #send_btn, .send_btn');
         const sendTextarea = document.querySelector('#send_textarea, textarea');
@@ -368,12 +373,11 @@
                 }
             });
 
-            // キャラクター変更・チャットロード時の同期イベントを追加
             eventSource.on(event_types.CHAT_CHANGED || 'chat_changed', () => {
-                setTimeout(() => loadCharacterData(true), 200);
+                setTimeout(() => loadCharacterData(true), 300);
             });
             eventSource.on(event_types.CHARACTER_LOADED || 'character_loaded', () => {
-                setTimeout(() => loadCharacterData(true), 200);
+                setTimeout(() => loadCharacterData(true), 300);
             });
         }
     }
@@ -817,11 +821,10 @@
         }
     });
 
-    // 初期化と各トリガーの適用
+    // 初期化処理の開始
     setupFastSubmitTrigger();
     setupChatDomObserver();
     
-    // 遅延呼び出しによりキャラクターコンテキストのロード完了を確実に待ち受ける
     setTimeout(() => {
         loadCharacterData(true);
     }, 500);
