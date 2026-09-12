@@ -43,8 +43,8 @@
     async function detectImageExtension(imagePath) {
         if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
         const cleanPath = imagePath.trim();
-        
-        // すでに有効な拡張子（画像・動画）が含まれている場合は、404チェックや総当たりをせずそのまま返す
+
+        // すでに有効な拡張子が含まれている場合はそのまますぐ返す（404エラー防止）
         if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             return cleanPath;
         }
@@ -63,17 +63,16 @@
 
     // 高速チェック＆キャッシュ付きメディア確認
     function checkMediaExists(mediaUrl) {
-        if (mediaExistsCache.has(mediaUrl)) {
-            return Promise.resolve(mediaExistsCache.get(mediaUrl));
+        if (!mediaUrl || typeof mediaUrl !== 'string' || !mediaUrl.trim()) {
+            return Promise.resolve(false);
+        }
+        const cleanUrl = mediaUrl.trim();
+
+        if (mediaExistsCache.has(cleanUrl)) {
+            return Promise.resolve(mediaExistsCache.get(cleanUrl));
         }
 
         return new Promise((resolve) => {
-            if (!mediaUrl || typeof mediaUrl !== 'string' || !mediaUrl.trim()) {
-                mediaExistsCache.set(mediaUrl, false);
-                return resolve(false);
-            }
-            const cleanUrl = mediaUrl.trim();
-
             if (isVideoUrl(cleanUrl)) {
                 const video = document.createElement('video');
                 video.preload = 'metadata';
@@ -205,10 +204,10 @@
             isNegative = true;
             trimmed = trimmed.substring(4).trim();
         }
-        
+
         const terms = trimmed.split(',').map(t => t.trim()).filter(t => t);
         const matches = terms.some(term => text.toLowerCase().includes(term.toLowerCase()));
-        
+
         return isNegative ? !matches : matches;
     }
 
@@ -283,16 +282,10 @@
         return null;
     }
 
-    // --- メディア表示更新処理 ---
-    async function updateImage() {
-        if (isDefaultImageFailed) return;
-        const keywordMedia = findLastKeywordImage();
-        let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
-
-        if (!newUrl || typeof newUrl !== 'string' || newUrl.trim() === '') {
-            return;
-        }
-        newUrl = newUrl.trim();
+    // --- 指定URLでの即時メディア更新 ---
+    async function updateImageWithUrl(targetUrl) {
+        if (isDefaultImageFailed || !targetUrl || typeof targetUrl !== 'string' || !targetUrl.trim()) return;
+        let newUrl = targetUrl.trim();
 
         if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             const detected = await detectImageExtension(newUrl);
@@ -307,7 +300,6 @@
 
         console.log(`🖼 メディアを更新: ${newUrl}`);
         currentImageUrl = newUrl;
-
         mediaContainer.innerHTML = '';
 
         if (isVideoUrl(newUrl)) {
@@ -341,15 +333,26 @@
         }
     }
 
-    function safeUpdateImage() {
-        setTimeout(() => {
-            updateImage();
-        }, 50);
+    // --- DOM基準のメディア表示更新処理 ---
+    async function updateImage() {
+        if (isDefaultImageFailed) return;
+        const keywordMedia = findLastKeywordImage();
+        let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
+
+        if (!newUrl || typeof newUrl !== 'string' || !newUrl.trim()) {
+            return;
+        }
+        await updateImageWithUrl(newUrl);
     }
+
+    // 重複発火を抑止するデバウンス付き安全更新関数
+    const safeUpdateImage = debounce(() => {
+        updateImage();
+    }, 50);
 
     async function handleMediaError(element, src) {
         console.error("メディアの読み込みに失敗しました:", src);
-        if (src && !src.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
+        if (src && typeof src === 'string' && !src.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
             const detectedPath = await detectImageExtension(src);
             if (detectedPath) {
                 element.src = detectedPath;
@@ -831,7 +834,30 @@
                 safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
                 safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, safeUpdateImage);
                 safeOn(eventTypes.USER_MESSAGE_RENDERED, safeUpdateImage);
-                safeOn(eventTypes.MESSAGE_SENT, safeUpdateImage); // 即時反映用
+
+                // MESSAGE_SENT: 送信ボタン押下直後に送信テキストから直接キーワード判定を実施（最速化）
+                safeOn(eventTypes.MESSAGE_SENT, (data) => {
+                    if (currentTextMode !== 'user') return;
+
+                    let sentText = "";
+                    if (typeof data === 'string') {
+                        sentText = data;
+                    } else if (data && typeof data.text === 'string') {
+                        sentText = data.text;
+                    } else {
+                        const inputEl = document.querySelector('#send_textarea');
+                        if (inputEl) sentText = inputEl.value;
+                    }
+
+                    if (sentText) {
+                        const matchedUrl = findMatchingImageUrl(sentText);
+                        if (matchedUrl) {
+                            updateImageWithUrl(matchedUrl);
+                            return;
+                        }
+                    }
+                    safeUpdateImage();
+                });
 
                 const onCharacterOrChatChanged = () => {
                     loadCharacterData(true);
