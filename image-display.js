@@ -1017,83 +1017,22 @@
                 safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
                 safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, safeUpdateImage);
                 safeOn(eventTypes.USER_MESSAGE_RENDERED, safeUpdateImage);
-                
+
                 // メッセージ削除・編集時の画像更新対応
                 if (eventTypes.MESSAGE_DELETED) safeOn(eventTypes.MESSAGE_DELETED, safeUpdateImage);
                 if (eventTypes.MESSAGE_EDITED) safeOn(eventTypes.MESSAGE_EDITED, safeUpdateImage);
                 if (eventTypes.CHAT_LOADED) safeOn(eventTypes.CHAT_LOADED, safeUpdateImage);
 
-                // MESSAGE_SENT / GENERATION_STARTED 時に入力文を取得して即時判定
-                const handleImmediateTextMatch = (data) => {
-                    if (currentTextMode !== 'user') return;
-
-                    let sentText = "";
-
-                    // 1. イベントデータ（オブジェクト）から取得
-                    if (data && typeof data === 'object') {
-                        if (typeof data.text === 'string') {
-                            sentText = data.text;
-                        } else if (typeof data.message === 'string') {
-                            sentText = data.message;
-                        } else if (typeof data.mes === 'string') {
-                            sentText = data.mes;
-                        }
-                    }
-                    // イベントデータ（文字列）から取得
-                    // ※ GENERATION_STARTED は "normal" などの生成タイプ文字列を渡すため除外する
-                    else if (typeof data === 'string') {
-                        const generationTypes = new Set([
-                            'normal', 'regenerate', 'swipe', 'impersonate',
-                            'continue', 'quiet', 'command'
-                        ]);
-                        const trimmed = data.trim();
-                        if (trimmed && !generationTypes.has(trimmed.toLowerCase())) {
-                            sentText = trimmed;
-                        }
-                    }
-
-                    // 2. SillyTavern のコンテキストチャット配列から最新ユーザーメッセージを取得
-                    //    （GENERATION_STARTED の時点で既に配列に追加されている）
-                    if (!sentText) {
-                        try {
-                            const ctx = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
-                            if (ctx && Array.isArray(ctx.chat) && ctx.chat.length > 0) {
-                                const last = ctx.chat[ctx.chat.length - 1];
-                                if (last && last.is_user && typeof last.mes === 'string' && last.mes.trim()) {
-                                    sentText = last.mes;
-                                }
-                            }
-                        } catch (e) {
-                            // context 取得失敗時は無視
-                        }
-                    }
-
-                    // 3. #send_textarea の値（まだクリアされていない場合のみ）
-                    if (!sentText) {
-                        const inputEl = document.querySelector('#send_textarea');
-                        if (inputEl && inputEl.value && inputEl.value.trim()) {
-                            sentText = inputEl.value;
-                        }
-                    }
-
-                    // ★ DOM フォールバックは行わない。
-                    //   GENERATION_STARTED / MESSAGE_SENT の時点では、新しいユーザーメッセージが
-                    //   まだDOMに追加されていない可能性がある。その状態でDOMを読むと
-                    //   「前回のメッセージ」を取得してしまい、キーワード切替時に
-                    //   一瞬だけ前のキーワードの画像が表示される不具合の原因となる。
-                    //   DOM反映後の更新は USER_MESSAGE_RENDERED → safeUpdateImage が担当する。
-
-                    if (sentText && sentText.trim()) {
-                        const matchedUrl = findMatchingImageUrl(sentText);
-                        if (matchedUrl) {
-                            updateImageWithUrl(matchedUrl);
-                        }
-                    }
-                    // テキストを取得できなかった場合は何もしない（USER_MESSAGE_RENDERED に任せる）
-                };
-
-                safeOn(eventTypes.MESSAGE_SENT, handleImmediateTextMatch);
-                if (eventTypes.GENERATION_STARTED) safeOn(eventTypes.GENERATION_STARTED, handleImmediateTextMatch);
+                // ★ MESSAGE_SENT / GENERATION_STARTED への handleImmediateTextMatch 登録は削除。
+                //   理由：
+                //   - これらのイベント発火時点では、新しいユーザーメッセージが DOM に
+                //     追加されていないことがある。
+                //   - #send_textarea は既にクリア済み or 次の入力途中のテキストが入っている
+                //     可能性があり、フォールバックで誤ったテキストを取得してしまう。
+                //   - その結果、キーワード切替時に前のキーワードや次の入力途中の
+                //     キーワードで誤マッチし、一瞬別のメディアが表示される不具合が発生する。
+                //   - USER_MESSAGE_RENDERED が発火した時点では DOM に新メッセージが
+                //     追加済みなので、findLastKeywordImage が正しいテキストを取得できる。
 
                 const onCharacterOrChatChanged = () => {
                     loadCharacterData(true);
