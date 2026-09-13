@@ -194,20 +194,53 @@
     `;
     document.body.appendChild(customWindow);
 
-    // --- 条件評価・キーワードロジック ---
+    // --- 条件評価・キーワードロジック (NOT / AND / OR 対応) ---
     function evaluateBasicCondition(condStr, text) {
-        let trimmed = condStr.trim();
-        if (!trimmed) return false;
-        let isNegative = false;
-        if (trimmed.startsWith('NOT ') || trimmed.startsWith('not ')) {
-            isNegative = true;
-            trimmed = trimmed.substring(4).trim();
+        if (!condStr || !text) return false;
+
+        const lowerText = text.toLowerCase();
+        
+        // '+'（AND）または ','（OR）で区切る
+        const isAndMode = condStr.includes('+');
+        const delimiter = isAndMode ? '+' : ',';
+
+        const rawTokens = condStr.split(delimiter).map(t => t.trim()).filter(Boolean);
+        if (rawTokens.length === 0) return false;
+
+        const positiveKeywords = [];
+        const negativeKeywords = [];
+
+        // トークンを包含キーワード(Positive)と除外キーワード(Negative)に分離
+        for (let token of rawTokens) {
+            token = token.toLowerCase();
+            if (token.startsWith('!') || token.startsWith('not ')) {
+                const cleanNotKey = token.replace(/^(!|not\s*)/i, '').trim();
+                if (cleanNotKey) negativeKeywords.push(cleanNotKey);
+            } else {
+                positiveKeywords.push(token);
+            }
         }
 
-        const terms = trimmed.split(',').map(t => t.trim()).filter(t => t);
-        const matches = terms.some(term => text.toLowerCase().includes(term.toLowerCase()));
+        // 1. NOT（除外）チェック: 文章内に1つでも NOT キーワードがあれば即不一致
+        for (const negKey of negativeKeywords) {
+            if (lowerText.includes(negKey)) {
+                return false;
+            }
+        }
 
-        return isNegative ? !matches : matches;
+        // 2. Positive（包含）チェック
+        if (positiveKeywords.length === 0) {
+            // NOT条件のみ指定（例: "!民家"）の場合、除外チェックを通れば一致とする
+            return true;
+        }
+
+        if (isAndMode) {
+            // AND 判定: すべての包含キーワードが含まれている必要がある
+            return positiveKeywords.every(posKey => lowerText.includes(posKey));
+        } else {
+            // OR 判定: 少なくとも1つの包含キーワードが含まれている必要がある
+            return positiveKeywords.some(posKey => lowerText.includes(posKey));
+        }
     }
 
     function processAnd(expr, text) {
@@ -229,8 +262,8 @@
     function evaluateCondition(condStr, text) {
         if (!condStr || !text) return false;
         let processed = condStr;
-        if (processed.includes('or')) return processOr(processed, text);
-        if (processed.includes('and')) return processAnd(processed, text);
+        if (processed.includes(' or ') || processed.includes(' OR ')) return processOr(processed, text);
+        if (processed.includes(' and ') || processed.includes(' AND ')) return processAnd(processed, text);
         return evaluateBasicCondition(processed, text);
     }
 
@@ -252,7 +285,7 @@
             .map(([key, url]) => ({
                 condition: key,
                 url: url,
-                complexity: (key.match(/and/g) || []).length * 10 + (key.match(/or/g) || []).length * 5 + key.length
+                complexity: (key.match(/and/g) || []).length * 10 + (key.match(/or/g) || []).length * 5 + (key.match(/\+/g) || []).length * 8 + key.length
             }))
             .sort((a, b) => b.complexity - a.complexity);
 
@@ -285,7 +318,7 @@
     async function updateImageWithUrl(targetUrl) {
         if (isDefaultImageFailed) return;
         
-        // 空文字・不正値の強固なガード（127.0.0.1:8000 への不正リクエストを防ぐ）
+        // 空文字・不正値の強固なガード
         if (!targetUrl || typeof targetUrl !== 'string' || !targetUrl.trim()) {
             console.warn("⚠ 空または不正なメディアURLのため、デフォルト画像へ安全にフォールバックします。");
             const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
