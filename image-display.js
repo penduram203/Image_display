@@ -1028,31 +1028,68 @@
                     if (currentTextMode !== 'user') return;
 
                     let sentText = "";
-                    if (typeof data === 'string') {
-                        sentText = data;
-                    } else if (data && typeof data.text === 'string') {
-                        sentText = data.text;
-                    } else if (data && typeof data.message === 'string') {
-                        sentText = data.message;
-                    } else {
-                        const inputEl = document.querySelector('#send_textarea');
-                        if (inputEl && inputEl.value) {
-                            sentText = inputEl.value;
-                        } else {
-                            // DOMから直前に追加されたユーザーメッセージ要素を取得
-                            const lastUserMsg = document.querySelector('.mes[is_user="true"]:last-child .mes_text');
-                            if (lastUserMsg) sentText = lastUserMsg.textContent || "";
+
+                    // 1. イベントデータ（オブジェクト）から取得
+                    if (data && typeof data === 'object') {
+                        if (typeof data.text === 'string') {
+                            sentText = data.text;
+                        } else if (typeof data.message === 'string') {
+                            sentText = data.message;
+                        } else if (typeof data.mes === 'string') {
+                            sentText = data.mes;
+                        }
+                    }
+                    // イベントデータ（文字列）から取得
+                    // ※ GENERATION_STARTED は "normal" などの生成タイプ文字列を渡すため除外する
+                    else if (typeof data === 'string') {
+                        const generationTypes = new Set([
+                            'normal', 'regenerate', 'swipe', 'impersonate',
+                            'continue', 'quiet', 'command'
+                        ]);
+                        const trimmed = data.trim();
+                        if (trimmed && !generationTypes.has(trimmed.toLowerCase())) {
+                            sentText = trimmed;
                         }
                     }
 
-                    if (sentText) {
+                    // 2. SillyTavern のコンテキストチャット配列から最新ユーザーメッセージを取得
+                    //    （GENERATION_STARTED の時点で既に配列に追加されている）
+                    if (!sentText) {
+                        try {
+                            const ctx = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
+                            if (ctx && Array.isArray(ctx.chat) && ctx.chat.length > 0) {
+                                const last = ctx.chat[ctx.chat.length - 1];
+                                if (last && last.is_user && typeof last.mes === 'string' && last.mes.trim()) {
+                                    sentText = last.mes;
+                                }
+                            }
+                        } catch (e) {
+                            // context 取得失敗時は無視
+                        }
+                    }
+
+                    // 3. #send_textarea の値（まだクリアされていない場合のみ）
+                    if (!sentText) {
+                        const inputEl = document.querySelector('#send_textarea');
+                        if (inputEl && inputEl.value && inputEl.value.trim()) {
+                            sentText = inputEl.value;
+                        }
+                    }
+
+                    // ★ DOM フォールバックは行わない。
+                    //   GENERATION_STARTED / MESSAGE_SENT の時点では、新しいユーザーメッセージが
+                    //   まだDOMに追加されていない可能性がある。その状態でDOMを読むと
+                    //   「前回のメッセージ」を取得してしまい、キーワード切替時に
+                    //   一瞬だけ前のキーワードの画像が表示される不具合の原因となる。
+                    //   DOM反映後の更新は USER_MESSAGE_RENDERED → safeUpdateImage が担当する。
+
+                    if (sentText && sentText.trim()) {
                         const matchedUrl = findMatchingImageUrl(sentText);
                         if (matchedUrl) {
                             updateImageWithUrl(matchedUrl);
-                            return;
                         }
                     }
-                    safeUpdateImage();
+                    // テキストを取得できなかった場合は何もしない（USER_MESSAGE_RENDERED に任せる）
                 };
 
                 safeOn(eventTypes.MESSAGE_SENT, handleImmediateTextMatch);
