@@ -1,474 +1,555 @@
 (function () {
-    console.log("Image Display: 初期化を開始します。");
-    const MODULE_NAME = 'image_display';
-    const OLD_STORAGE_KEY = 'imageDisplayState';
+    'use strict';
 
-    // メディアの存在確認・読み込み用キャッシュマップ
-    const mediaExistsCache = new Map();
+    // --- 定数定義 ---
+    const MODULE_NAME = 'image_display_extension';
+    const OLD_STORAGE_KEY = 'imageDisplay_customState';
+    const DEFAULT_WIDTH = 300;
+    const DEFAULT_HEIGHT = 400;
+    const DEFAULT_LEFT = 20;
+    const DEFAULT_TOP = 20;
+    const DEFAULT_BG_COLOR = '#ffffff00';
+    const SUPPORTED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
 
-    // --- デフォルト値とグローバル変数の定義 ---
-    const DEFAULT_WIDTH = 300, DEFAULT_HEIGHT = 200, DEFAULT_LEFT = 100, DEFAULT_TOP = 100, DEFAULT_BG_COLOR = '#000000';
-    const defaultImageMap = { "default": "addchara/default" };
-    let currentCharacter = null;
+    const defaultImageMap = {
+        "デフォルト": "default.png"
+    };
+
+    // --- 状態変数 ---
     let currentImageMap = defaultImageMap;
-    let currentImageUrl = null;
+    let currentCharacter = null;
+    let imageMapCache = new Map();
+    let imageExistenceCache = new Map();
     let currentMode = 'normal';
+    let currentTextMode = 'ai'; // 'ai' または 'user'
+    let isDragging = false;
+    let isResizing = false;
+    let isCustomWindowOpen = false;
+    let offsetX, offsetY;
     let preNormalState = { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, left: DEFAULT_LEFT, top: DEFAULT_TOP };
-    let isDragging = false, isResizing = false, offsetX, offsetY, isCustomWindowOpen = false;
-    const imageMapCache = new Map();
-    let isDefaultImageFailed = false;
-    let currentTextMode = 'user'; // 'user' または 'ai'
-    let streamingTimer = null;
-    let lastStreamingText = '';
-    const STREAMING_DELAY = 500;
-    let chatDomObserver = null;
+    let activeObjectUrl = null;
 
-    // デバウンス処理
-    function debounce(func, wait) {
-        let timeout;
-        return function executedFunction(...args) {
-            clearTimeout(timeout);
-            timeout = setTimeout(() => func(...args), wait);
-        };
-    }
+    // ストリーミング処理用変数
+    let lastProcessedText = "";
+    let streamThrottleTimer = null;
 
-    // --- 拡張子自動検出関数（動画・画像対応） ---
-    const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp', 'mp4', 'webm'];
-
-    function isVideoUrl(url) {
-        if (!url || typeof url !== 'string') return false;
-        return !!url.match(/\.(mp4|webm)$/i);
-    }
-
-    async function detectImageExtension(imagePath) {
-        if (!imagePath || typeof imagePath !== 'string' || !imagePath.trim()) return null;
-        const cleanPath = imagePath.trim();
-
-        if (cleanPath.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            return cleanPath;
-        }
-
-        for (const ext of ALLOWED_EXTENSIONS) {
-            const imagePathWithExt = `${cleanPath}.${ext}`;
-            const exists = await checkMediaExists(imagePathWithExt);
-            if (exists) {
-                console.log(`✅ 拡張子自動検出: ${imagePathWithExt}`);
-                return imagePathWithExt;
-            }
-        }
-        console.warn(`⚠ メディアが見つかりません: ${cleanPath}`);
-        return null;
-    }
-
-    // 高速チェック＆キャッシュ付きメディア確認
-    function checkMediaExists(mediaUrl) {
-        if (!mediaUrl || typeof mediaUrl !== 'string' || !mediaUrl.trim()) {
-            return Promise.resolve(false);
-        }
-        const cleanUrl = mediaUrl.trim();
-
-        if (mediaExistsCache.has(cleanUrl)) {
-            return Promise.resolve(mediaExistsCache.get(cleanUrl));
-        }
-
-        return new Promise((resolve) => {
-            if (isVideoUrl(cleanUrl)) {
-                const video = document.createElement('video');
-                video.preload = 'metadata';
-                video.onloadedmetadata = () => {
-                    mediaExistsCache.set(cleanUrl, true);
-                    resolve(true);
-                };
-                video.onerror = () => {
-                    mediaExistsCache.set(cleanUrl, false);
-                    resolve(false);
-                };
-                video.src = cleanUrl;
-            } else {
-                const img = new Image();
-                img.onload = () => {
-                    mediaExistsCache.set(cleanUrl, true);
-                    resolve(true);
-                };
-                img.onerror = () => {
-                    mediaExistsCache.set(cleanUrl, false);
-                    resolve(false);
-                };
-                img.src = cleanUrl;
-            }
-        });
-    }
-
-    async function detectImageMapExtensions(imageMap) {
-        if (!imageMap) return imageMap;
-        const detectedMap = {};
-        for (const [key, value] of Object.entries(imageMap)) {
-            if (Array.isArray(value)) {
-                const detectedArray = [];
-                for (const imagePath of value) {
-                    const detectedPath = await detectImageExtension(imagePath);
-                    if (detectedPath) {
-                        detectedArray.push(detectedPath);
-                    }
-                }
-                detectedMap[key] = detectedArray.length > 0 ? detectedArray : value;
-            } else if (typeof value === 'string') {
-                const detectedPath = await detectImageExtension(value);
-                detectedMap[key] = detectedPath || value;
-            } else {
-                detectedMap[key] = value;
-            }
-        }
-        return detectedMap;
-    }
-
-    // --- UI要素の作成 ---
+    // --- UI要素の生成 ---
     const imageContainer = document.createElement('div');
     imageContainer.id = 'image-display-container';
-    document.body.appendChild(imageContainer);
 
     const header = document.createElement('div');
     header.id = 'image-display-header';
-    header.textContent = 'メディア表示エリア (ドラッグで移動)';
-    imageContainer.appendChild(header);
 
     const colorPicker = document.createElement('input');
     colorPicker.type = 'color';
-    colorPicker.id = 'bg-color-picker';
-    colorPicker.value = DEFAULT_BG_COLOR;
-    colorPicker.title = '背景色を変更';
-    header.appendChild(colorPicker);
-
-    // メディア表示用コンテナ
-    const mediaContainer = document.createElement('div');
-    mediaContainer.id = 'media-element-container';
-    mediaContainer.style.width = '100%';
-    mediaContainer.style.height = 'calc(100% - 30px)';
-    imageContainer.appendChild(mediaContainer);
-
-    const resizeHandle = document.createElement('div');
-    resizeHandle.id = 'resize-handle';
-    imageContainer.appendChild(resizeHandle);
-
-    // コントロールボタンコンテナ
-    const controlContainer = document.createElement('div');
-    controlContainer.id = 'image-control-container';
-    document.body.appendChild(controlContainer);
+    colorPicker.id = 'image-display-color-picker';
 
     const textModeButton = document.createElement('button');
-    textModeButton.id = 'text-mode-button';
-    textModeButton.textContent = 'UT';
-    textModeButton.title = 'クリックでテキストモード切り替え（現在: ユーザー）';
-    controlContainer.appendChild(textModeButton);
+    textModeButton.id = 'image-display-textmode-btn';
+    textModeButton.textContent = 'AI';
+    textModeButton.title = 'クリックでテキストモード切り替え（現在: AI）';
 
     const customButton = document.createElement('button');
-    customButton.id = 'custom-button';
-    customButton.textContent = 'カスタム';
-    customButton.title = '位置とサイズを手動設定';
-    controlContainer.appendChild(customButton);
-
-    const maximizeButton = document.createElement('button');
-    maximizeButton.id = 'maximize-button';
-    maximizeButton.textContent = '全画面';
-    maximizeButton.title = '全画面モードに切替';
-    maximizeButton.classList.add('enabled');
-    controlContainer.appendChild(maximizeButton);
+    customButton.id = 'image-display-custom-btn';
+    customButton.textContent = '⚙';
+    customButton.title = 'サイズ・位置の詳細設定';
 
     const halfMaximizeButton = document.createElement('button');
-    halfMaximizeButton.id = 'half-maximize-button';
-    halfMaximizeButton.textContent = '左半分';
-    halfMaximizeButton.title = '左半分モードに切替';
+    halfMaximizeButton.id = 'image-display-half-max-btn';
+    halfMaximizeButton.textContent = '◧';
+    halfMaximizeButton.title = '画面左半分表示 (50vw x 100vh)';
     halfMaximizeButton.classList.add('enabled');
-    controlContainer.appendChild(halfMaximizeButton);
 
-    // カスタム設定ウィンドウ
+    const maximizeButton = document.createElement('button');
+    maximizeButton.id = 'image-display-max-btn';
+    maximizeButton.textContent = '□';
+    maximizeButton.title = '全画面表示 (100% x 100%)';
+    maximizeButton.classList.add('enabled');
+
+    header.appendChild(colorPicker);
+    header.appendChild(textModeButton);
+    header.appendChild(customButton);
+    header.appendChild(halfMaximizeButton);
+    header.appendChild(maximizeButton);
+
+    const imageElement = document.createElement('img');
+    imageElement.id = 'image-display-element';
+
+    const resizeHandle = document.createElement('div');
+    resizeHandle.id = 'image-display-resize-handle';
+
+    // カスタムサイズ調整ウィンドウ
     const customWindow = document.createElement('div');
-    customWindow.id = 'custom-window';
+    customWindow.id = 'image-display-custom-window';
     customWindow.innerHTML = `
-        <h3>位置・サイズの設定</h3>
-        <label>幅 (px): <input type="number" id="custom-width" min="100"></label>
-        <label>高さ (px): <input type="number" id="custom-height" min="100"></label>
-        <label>X位置 (px): <input type="number" id="custom-left"></label>
-        <label>Y位置 (px): <input type="number" id="custom-top"></label>
-        <button class="close-button" id="close-custom-window">閉じる</button>
+        <div class="custom-window-header">
+            <span>サイズ・位置指定</span>
+            <button id="close-custom-window">×</button>
+        </div>
+        <div class="custom-window-body">
+            <label>幅 (px): <input type="number" id="custom-width"></label>
+            <label>高さ (px): <input type="number" id="custom-height"></label>
+            <label>Left (px): <input type="number" id="custom-left"></label>
+            <label>Top (px): <input type="number" id="custom-top"></label>
+        </div>
     `;
+
+    imageContainer.appendChild(header);
+    imageContainer.appendChild(imageElement);
+    imageContainer.appendChild(resizeHandle);
+    document.body.appendChild(imageContainer);
     document.body.appendChild(customWindow);
 
-    // --- 条件評価・キーワードロジック (NOT / AND / OR 対応) ---
-    function evaluateBasicCondition(condStr, text) {
-        if (!condStr || !text) return false;
+    // --- CSSスタイルの注入 ---
+    const style = document.createElement('style');
+    style.textContent = `
+        #image-display-container {
+            position: absolute;
+            z-index: 9999;
+            box-sizing: border-box;
+            border: 2px solid #ccc;
+            background-color: ${DEFAULT_BG_COLOR};
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        #image-display-container.dragging, #image-display-container.resizing {
+            border-color: #007bff;
+            box-shadow: 0 6px 15px rgba(0,123,255,0.4);
+        }
+        #image-display-header {
+            height: 28px;
+            background: rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(4px);
+            cursor: grab;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding: 0 6px;
+            gap: 6px;
+            user-select: none;
+            z-index: 10;
+        }
+        #image-display-header button {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            font-size: 11px;
+            font-weight: bold;
+            height: 20px;
+            min-width: 20px;
+            padding: 0 4px;
+            border-radius: 3px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+        #image-display-header button:hover {
+            background: rgba(255, 255, 255, 0.4);
+        }
+        #image-display-header button.disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+        #image-display-color-picker {
+            -webkit-appearance: none;
+            border: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            cursor: pointer;
+            background: transparent;
+            margin-right: auto;
+        }
+        #image-display-color-picker::-webkit-color-swatch-wrapper { padding: 0; }
+        #image-display-color-picker::-webkit-color-swatch { border: 1px solid #fff; border-radius: 50%; }
+        #image-display-element {
+            width: 100%;
+            height: calc(100% - 28px);
+            object-fit: contain;
+            pointer-events: none;
+            display: block;
+        }
+        #image-display-resize-handle {
+            width: 14px;
+            height: 14px;
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            cursor: se-resize;
+            background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,0.6) 50%);
+            z-index: 11;
+        }
+        #image-display-custom-window {
+            position: fixed;
+            top: 50px;
+            right: 50px;
+            width: 200px;
+            background: rgba(20, 20, 20, 0.9);
+            color: white;
+            border: 1px solid #555;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            z-index: 10000;
+            display: none;
+            font-size: 12px;
+            backdrop-filter: blur(5px);
+        }
+        .custom-window-header {
+            padding: 6px 10px;
+            background: rgba(255,255,255,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: bold;
+        }
+        .custom-window-header button {
+            background: none;
+            border: none;
+            color: #ccc;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .custom-window-header button:hover { color: white; }
+        .custom-window-body {
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .custom-window-body label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .custom-window-body input {
+            width: 70px;
+            background: #333;
+            border: 1px solid #555;
+            color: white;
+            border-radius: 3px;
+            padding: 2px 4px;
+            text-align: right;
+        }
+        #image-display-container.half-maximized {
+            border-radius: 0;
+            border: none;
+        }
+    `;
+    document.head.appendChild(style);
 
-        const lowerText = text.toLowerCase();
-        
-        // '+'（AND）または ','（OR）で区切る
-        const isAndMode = condStr.includes('+');
-        const delimiter = isAndMode ? '+' : ',';
+    // --- テキストモード切り替え ---
+    textModeButton.addEventListener('click', () => {
+        currentTextMode = currentTextMode === 'ai' ? 'user' : 'ai';
+        textModeButton.textContent = currentTextMode === 'user' ? 'UT' : 'AI';
+        textModeButton.title = `クリックでテキストモード切り替え（現在: ${currentTextMode === 'user' ? 'ユーザー' : 'AI'}）`;
+        saveDisplayState();
+        safeUpdateImage();
+    });
 
-        const rawTokens = condStr.split(delimiter).map(t => t.trim()).filter(Boolean);
-        if (rawTokens.length === 0) return false;
-
-        const positiveKeywords = [];
-        const negativeKeywords = [];
-
-        // トークンを包含キーワード(Positive)と除外キーワード(Negative)に分離
-        for (let token of rawTokens) {
-            token = token.toLowerCase();
-            if (token.startsWith('!') || token.startsWith('not ')) {
-                const cleanNotKey = token.replace(/^(!|not\s*)/i, '').trim();
-                if (cleanNotKey) negativeKeywords.push(cleanNotKey);
-            } else {
-                positiveKeywords.push(token);
+    // --- 条件式パーサー＆評価エンジン ---
+    function tokenize(pattern) {
+        const tokens = [];
+        let i = 0;
+        while (i < pattern.length) {
+            const char = pattern[i];
+            if (/\s/.test(char)) { i++; continue; }
+            if (char === '(' || char === ')') {
+                tokens.push({ type: char, val: char });
+                i++; continue;
             }
-        }
-
-        // 1. NOT（除外）チェック: 文章内に1つでも NOT キーワードがあれば即不一致
-        for (const negKey of negativeKeywords) {
-            if (lowerText.includes(negKey)) {
-                return false;
+            if (char === '"' || char === "'") {
+                const quote = char;
+                let str = '';
+                i++;
+                while (i < pattern.length && pattern[i] !== quote) {
+                    if (pattern[i] === '\\' && i + 1 < pattern.length) i++;
+                    str += pattern[i];
+                    i++;
+                }
+                i++;
+                tokens.push({ type: 'TERM', val: str });
+                continue;
             }
+            if (char === '+' || char === '|' || char === ',') {
+                tokens.push({ type: 'OP', val: char === '+' ? 'AND' : 'OR' });
+                i++; continue;
+            }
+            if (pattern.substr(i, 3).toUpperCase() === 'AND' && (i + 3 >= pattern.length || /\s|\(/.test(pattern[i + 3]))) {
+                tokens.push({ type: 'OP', val: 'AND' }); i += 3; continue;
+            }
+            if (pattern.substr(i, 2).toUpperCase() === 'OR' && (i + 2 >= pattern.length || /\s|\(/.test(pattern[i + 2]))) {
+                tokens.push({ type: 'OP', val: 'OR' }); i += 2; continue;
+            }
+            if (pattern.substr(i, 3).toUpperCase() === 'NOT' && (i + 3 >= pattern.length || /\s|\(/.test(pattern[i + 3]))) {
+                tokens.push({ type: 'OP', val: 'NOT' }); i += 3; continue;
+            }
+            if (char === '!') {
+                tokens.push({ type: 'OP', val: 'NOT' }); i++; continue;
+            }
+            let term = '';
+            while (i < pattern.length && !/[\s()+|,"']/.test(pattern[i])) {
+                term += pattern[i];
+                i++;
+            }
+            if (term.toUpperCase() === 'AND') tokens.push({ type: 'OP', val: 'AND' });
+            else if (term.toUpperCase() === 'OR') tokens.push({ type: 'OP', val: 'OR' });
+            else if (term.toUpperCase() === 'NOT') tokens.push({ type: 'OP', val: 'NOT' });
+            else if (term) tokens.push({ type: 'TERM', val: term });
         }
-
-        // 2. Positive（包含）チェック
-        if (positiveKeywords.length === 0) {
-            // NOT条件のみ指定（例: "!民家"）の場合、除外チェックを通れば一致とする
-            return true;
-        }
-
-        if (isAndMode) {
-            // AND 判定: すべての包含キーワードが含まれている必要がある
-            return positiveKeywords.every(posKey => lowerText.includes(posKey));
-        } else {
-            // OR 判定: 少なくとも1つの包含キーワードが含まれている必要がある
-            return positiveKeywords.some(posKey => lowerText.includes(posKey));
-        }
+        return tokens;
     }
 
-    function processAnd(expr, text) {
-        const parts = expr.split(/\s+and\s+/i);
-        for (const part of parts) {
-            if (!evaluateBasicCondition(part, text)) return false;
+    function parseTokensToAST(tokens) {
+        let pos = 0;
+        function parseExpression() { return parseOr(); }
+        function parseOr() {
+            let left = parseAnd();
+            while (pos < tokens.length && tokens[pos].type === 'OP' && tokens[pos].val === 'OR') {
+                pos++;
+                let right = parseAnd();
+                left = { type: 'OR', left, right };
+            }
+            return left;
         }
-        return true;
+        function parseAnd() {
+            let left = parseNot();
+            while (pos < tokens.length) {
+                if (tokens[pos].type === 'OP' && tokens[pos].val === 'AND') {
+                    pos++;
+                    let right = parseNot();
+                    left = { type: 'AND', left, right };
+                } else if (tokens[pos].type === 'TERM' || tokens[pos].type === '(' || (tokens[pos].type === 'OP' && tokens[pos].val === 'NOT')) {
+                    let right = parseNot();
+                    left = { type: 'AND', left, right };
+                } else break;
+            }
+            return left;
+        }
+        function parseNot() {
+            if (pos < tokens.length && tokens[pos].type === 'OP' && tokens[pos].val === 'NOT') {
+                pos++;
+                let operand = parseNot();
+                return { type: 'NOT', operand };
+            }
+            return parsePrimary();
+        }
+        function parsePrimary() {
+            if (pos >= tokens.length) return { type: 'EMPTY' };
+            const token = tokens[pos];
+            if (token.type === '(') {
+                pos++;
+                let expr = parseExpression();
+                if (pos < tokens.length && tokens[pos].type === ')') pos++;
+                return expr;
+            }
+            if (token.type === 'TERM') {
+                pos++;
+                return { type: 'TERM', val: token.val };
+            }
+            pos++;
+            return { type: 'EMPTY' };
+        }
+        return parseExpression();
     }
 
-    function processOr(expr, text) {
-        const parts = expr.split(/\s+or\s+/i);
-        for (const part of parts) {
-            if (processAnd(part, text)) return true;
+    function evaluateAST(ast, targetText, matchedTerms) {
+        if (!ast || ast.type === 'EMPTY') return false;
+        if (ast.type === 'TERM') {
+            const termLower = ast.val.toLowerCase();
+            const textLower = targetText.toLowerCase();
+            const isMatched = textLower.includes(termLower);
+            if (isMatched && matchedTerms) matchedTerms.add(ast.val);
+            return isMatched;
+        }
+        if (ast.type === 'NOT') return !evaluateAST(ast.operand, targetText, matchedTerms);
+        if (ast.type === 'AND') {
+            const leftRes = evaluateAST(ast.left, targetText, matchedTerms);
+            if (!leftRes) return false;
+            const rightRes = evaluateAST(ast.right, targetText, matchedTerms);
+            return leftRes && rightRes;
+        }
+        if (ast.type === 'OR') {
+            const leftRes = evaluateAST(ast.left, targetText, matchedTerms);
+            const rightRes = evaluateAST(ast.right, targetText, matchedTerms);
+            return leftRes || rightRes;
         }
         return false;
     }
 
-    function evaluateCondition(condStr, text) {
-        if (!condStr || !text) return false;
-        let processed = condStr;
-        if (processed.includes(' or ') || processed.includes(' OR ')) return processOr(processed, text);
-        if (processed.includes(' and ') || processed.includes(' AND ')) return processAnd(processed, text);
-        return evaluateBasicCondition(processed, text);
-    }
-
-    function getRandomImageSource(imageSource) {
-        if (Array.isArray(imageSource)) {
-            if (imageSource.length === 0) return null;
-            const validSources = imageSource.filter(src => typeof src === 'string' && src.trim() !== '');
-            if (validSources.length === 0) return null;
-            const randomIndex = Math.floor(Math.random() * validSources.length);
-            return validSources[randomIndex];
-        }
-        return (typeof imageSource === 'string' && imageSource.trim() !== '') ? imageSource : null;
-    }
-
+    // --- 画像探索・評価処理 ---
     function findMatchingImageUrl(text) {
         if (!text || !currentImageMap) return null;
-        const keywordEntries = Object.entries(currentImageMap)
-            .filter(([key]) => key !== "default" && key !== "thumbnail")
-            .map(([key, url]) => ({
-                condition: key,
-                url: url,
-                complexity: (key.match(/and/g) || []).length * 10 + (key.match(/or/g) || []).length * 5 + (key.match(/\+/g) || []).length * 8 + key.length
-            }))
-            .sort((a, b) => b.complexity - a.complexity);
 
-        for (const entry of keywordEntries) {
-            try {
-                if (evaluateCondition(entry.condition, text)) {
-                    const selected = getRandomImageSource(entry.url);
-                    if (selected) return selected;
+        let bestMatchUrl = null;
+        let maxMatchedLength = -1;
+        let defaultUrl = null;
+
+        for (const [pattern, fileName] of Object.entries(currentImageMap)) {
+            if (pattern === 'デフォルト' || pattern === 'default') {
+                defaultUrl = fileName;
+                continue;
+            }
+
+            const tokens = tokenize(pattern);
+            if (tokens.length === 0) continue;
+
+            const ast = parseTokensToAST(tokens);
+            const matchedTerms = new Set();
+            const isMatch = evaluateAST(ast, text, matchedTerms);
+
+            if (isMatch) {
+                let totalLength = 0;
+                matchedTerms.forEach(term => totalLength += term.length);
+                if (totalLength > maxMatchedLength) {
+                    maxMatchedLength = totalLength;
+                    bestMatchUrl = fileName;
                 }
-            } catch (error) {
-                console.error(`❌ 条件評価エラー "${entry.condition}":`, error);
             }
         }
-        return null;
+
+        return bestMatchUrl || defaultUrl;
     }
 
-    function findLastKeywordImage() {
-        const isUserMode = currentTextMode === 'user';
-        const selector = `.mes[is_user="${isUserMode}"] .mes_text`;
-        const messages = Array.from(document.querySelectorAll(selector));
-        for (let i = messages.length - 1; i >= 0; i--) {
-            const textContent = messages[i].textContent || messages[i].innerText || "";
-            const mediaUrl = findMatchingImageUrl(textContent);
-            if (mediaUrl) return mediaUrl;
+    async function checkImageExists(url) {
+        if (imageExistenceCache.has(url)) {
+            return imageExistenceCache.get(url);
         }
-        return null;
+        try {
+            const resp = await fetch(url, { method: 'HEAD' });
+            const exists = resp.ok;
+            imageExistenceCache.set(url, exists);
+            return exists;
+        } catch (e) {
+            imageExistenceCache.set(url, false);
+            return false;
+        }
     }
 
-    // --- 指定URLでの即時メディア更新 ---
-    async function updateImageWithUrl(targetUrl) {
-        if (isDefaultImageFailed) return;
-        
-        // 空文字・不正値の強固なガード
-        if (!targetUrl || typeof targetUrl !== 'string' || !targetUrl.trim()) {
-            console.warn("⚠ 空または不正なメディアURLのため、デフォルト画像へ安全にフォールバックします。");
-            const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
-            if (fallback && fallback !== targetUrl && typeof fallback === 'string' && fallback.trim()) {
-                await updateImageWithUrl(fallback);
+    async function detectImageMapExtensions(map) {
+        const resolvedMap = {};
+        for (const [key, val] of Object.entries(map)) {
+            if (typeof val !== 'string') continue;
+
+            const hasExt = SUPPORTED_EXTENSIONS.some(ext => val.toLowerCase().endsWith('.' + ext));
+            if (hasExt) {
+                resolvedMap[key] = val;
+                continue;
             }
-            return;
-        }
 
-        let newUrl = targetUrl.trim();
-
-        if (!newUrl.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            const detected = await detectImageExtension(newUrl);
-            if (detected) {
-                newUrl = detected;
-            } else {
-                console.warn(`⚠ メディア拡張子の補完に失敗しました: ${newUrl}`);
-                return;
+            let foundUrl = val;
+            if (currentCharacter) {
+                for (const ext of SUPPORTED_EXTENSIONS) {
+                    const testUrl = `addchara/${currentCharacter}/${val}.${ext}`;
+                    if (await checkImageExists(testUrl)) {
+                        foundUrl = testUrl;
+                        break;
+                    }
+                }
             }
+            resolvedMap[key] = foundUrl;
+        }
+        return resolvedMap;
+    }
+
+    function updateImageWithUrl(url) {
+        if (!url) return;
+
+        let finalUrl = url;
+        if (currentCharacter && !url.startsWith('http') && !url.startsWith('/') && !url.startsWith('data:') && !url.startsWith('addchara/')) {
+            finalUrl = `addchara/${currentCharacter}/${url}`;
         }
 
-        if (currentImageUrl === newUrl && mediaContainer.children.length > 0) {
-            return;
+        if (imageElement.src !== finalUrl && imageElement.getAttribute('data-raw-src') !== finalUrl) {
+            imageElement.setAttribute('data-raw-src', finalUrl);
+
+            fetch(finalUrl)
+                .then(res => {
+                    if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+                    return res.blob();
+                })
+                .then(blob => {
+                    const newObjectUrl = URL.createObjectURL(blob);
+                    if (activeObjectUrl) URL.revokeObjectURL(activeObjectUrl);
+                    activeObjectUrl = newObjectUrl;
+                    imageElement.src = newObjectUrl;
+                })
+                .catch(err => {
+                    console.warn(`[Image Display] 画像のBlob取得に失敗したため直参照にフォールバックします: ${finalUrl}`, err);
+                    imageElement.src = finalUrl;
+                });
         }
+    }
 
-        console.log(`🖼 メディアを更新: ${newUrl}`);
-        currentImageUrl = newUrl;
-        mediaContainer.innerHTML = '';
+    function safeUpdateImage() {
+        const targetText = getLatestTargetText();
+        const matchedUrl = findMatchingImageUrl(targetText);
+        if (matchedUrl) {
+            updateImageWithUrl(matchedUrl);
+        }
+    }
 
-        if (isVideoUrl(newUrl)) {
-            const videoElement = document.createElement('video');
-            videoElement.src = newUrl;
-            videoElement.autoplay = true;
-            videoElement.loop = true;
-            videoElement.muted = true;
-            videoElement.playsInline = true;
-            videoElement.preload = 'auto';
-            videoElement.style.width = '100%';
-            videoElement.style.height = '100%';
-            videoElement.style.objectFit = 'contain';
-            videoElement.onerror = () => handleMediaError(videoElement, newUrl);
-            mediaContainer.appendChild(videoElement);
-            videoElement.play().catch(() => {});
+    function getLatestTargetText() {
+        if (currentTextMode === 'user') {
+            const userMsgs = document.querySelectorAll('.mes[is_user="true"] .mes_text');
+            if (userMsgs.length > 0) {
+                return userMsgs[userMsgs.length - 1].textContent || "";
+            }
+            const inputEl = document.querySelector('#send_textarea');
+            if (inputEl && inputEl.value) return inputEl.value;
         } else {
-            const imgElement = document.createElement('img');
-            imgElement.style.width = '100%';
-            imgElement.style.height = '100%';
-            imgElement.style.objectFit = 'contain';
-
-            imgElement.onload = () => {
-                if (currentImageUrl === newUrl) {
-                    mediaContainer.innerHTML = '';
-                    mediaContainer.appendChild(imgElement);
-                }
-            };
-            imgElement.onerror = () => handleMediaError(imgElement, newUrl);
-            imgElement.src = newUrl;
-        }
-    }
-
-    // --- DOM基準のメディア表示更新処理 ---
-    async function updateImage() {
-        if (isDefaultImageFailed) return;
-        const keywordMedia = findLastKeywordImage();
-        let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
-
-        if (!newUrl || typeof newUrl !== 'string' || !newUrl.trim()) {
-            return;
-        }
-        await updateImageWithUrl(newUrl);
-    }
-
-    // 重複発火を抑止するデバウンス付き安全更新関数
-    const safeUpdateImage = debounce(() => {
-        updateImage();
-    }, 50);
-
-    async function handleMediaError(element, src) {
-        console.error("メディアの読み込みに失敗しました:", src);
-        if (src && typeof src === 'string' && !src.match(/\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i)) {
-            const detectedPath = await detectImageExtension(src);
-            if (detectedPath) {
-                element.src = detectedPath;
-                if (isVideoUrl(detectedPath) && element.tagName.toLowerCase() === 'video') {
-                    element.play().catch(() => {});
-                }
-                return;
+            const aiMsgs = document.querySelectorAll('.mes[is_user="false"] .mes_text');
+            if (aiMsgs.length > 0) {
+                return aiMsgs[aiMsgs.length - 1].textContent || "";
             }
         }
-        if (src && (src.match(/default\.(png|jpg|jpeg|webp|gif|avif|bmp|mp4|webm)$/i) || src.endsWith('/default'))) {
-            isDefaultImageFailed = true;
-            console.warn("⚠ デフォルトメディアが見つかりません。表示を無効化します");
-            mediaContainer.style.display = 'none';
-        } else {
-            const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
-            if (fallback && fallback !== src && typeof fallback === 'string' && fallback.trim()) {
-                element.src = fallback.trim();
-                if (isVideoUrl(fallback) && element.tagName.toLowerCase() === 'video') {
-                    element.play().catch(() => {});
-                }
-            }
-        }
+        return "";
     }
 
-    // --- テキストモード切り替え ---
-    function toggleTextMode() {
-        currentTextMode = currentTextMode === 'user' ? 'ai' : 'user';
-        textModeButton.textContent = currentTextMode === 'user' ? 'UT' : 'AI';
-        textModeButton.title = `クリックでテキストモード切り替え（現在: ${currentTextMode === 'user' ? 'ユーザー' : 'AI'}）`;
-        console.log(`🔄 テキストモード切替: ${currentTextMode}`);
-        saveDisplayState();
-        safeUpdateImage();
-    }
-    textModeButton.addEventListener('click', toggleTextMode);
-
-    // --- ストリーミング監視 ---
-    function handleStreamingUpdate() {
+    function handleStreamingUpdate(data) {
         if (currentTextMode !== 'ai') return;
-        const lastAiMessage = document.querySelector('.mes[is_user="false"]:last-child .mes_text');
-        if (!lastAiMessage) return;
 
-        const currentText = lastAiMessage.textContent;
-        if (currentText === lastStreamingText) return;
-        lastStreamingText = currentText;
+        let fullText = "";
+        if (typeof data === 'string') fullText = data;
+        else if (data && typeof data.text === 'string') fullText = data.text;
+        else fullText = getLatestTargetText();
 
-        if (streamingTimer) clearTimeout(streamingTimer);
-        streamingTimer = setTimeout(() => {
+        if (!fullText || fullText === lastProcessedText) return;
+        lastProcessedText = fullText;
+
+        if (streamThrottleTimer) return;
+        streamThrottleTimer = setTimeout(() => {
+            streamThrottleTimer = null;
             safeUpdateImage();
-        }, STREAMING_DELAY);
+        }, 100);
     }
 
     function setupChatDomObserver() {
         const chatContainer = document.querySelector('#chat');
-        if (!chatContainer) return;
-        if (chatDomObserver) chatDomObserver.disconnect();
+        if (!chatContainer) {
+            setTimeout(setupChatDomObserver, 1000);
+            return;
+        }
 
-        const debouncedUpdate = debounce(() => {
-            handleStreamingUpdate();
-            safeUpdateImage();
-        }, 150);
-
-        chatDomObserver = new MutationObserver((mutations) => {
-            debouncedUpdate();
+        const observer = new MutationObserver((mutations) => {
+            let shouldUpdate = false;
+            for (const mutation of mutations) {
+                if (mutation.type === 'childList' || mutation.type === 'characterData') {
+                    shouldUpdate = true;
+                    break;
+                }
+            }
+            if (shouldUpdate) {
+                safeUpdateImage();
+            }
         });
 
-        chatDomObserver.observe(chatContainer, {
-            childList: true,
-            subtree: true,
-            characterData: true
-        });
+        observer.observe(chatContainer, { childList: true, subtree: true, characterData: true });
     }
 
     // --- キャラクターデータの読み込み ---
@@ -880,7 +961,7 @@
                 safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
                 safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, safeUpdateImage);
                 safeOn(eventTypes.USER_MESSAGE_RENDERED, safeUpdateImage);
-                
+
                 // メッセージ削除・編集時の画像更新対応
                 if (eventTypes.MESSAGE_DELETED) safeOn(eventTypes.MESSAGE_DELETED, safeUpdateImage);
                 if (eventTypes.MESSAGE_EDITED) safeOn(eventTypes.MESSAGE_EDITED, safeUpdateImage);
