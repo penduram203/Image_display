@@ -23,6 +23,20 @@
     const STREAMING_DELAY = 500;
     let chatDomObserver = null;
 
+    // --- マッチキャッシュ（二重発火によるちらつき防止） ---
+    let lastMatchCache = { signature: null, url: null, timestamp: 0 };
+    const MATCH_CACHE_TTL = 1500; // ms
+
+    function getTextSignature(text) {
+        if (!text || typeof text !== 'string') return '';
+        // 末尾200文字をシグネチャとして使用
+        return text.slice(-200);
+    }
+
+    function invalidateMatchCache() {
+        lastMatchCache = { signature: null, url: null, timestamp: 0 };
+    }
+
     // デバウンス処理
     function debounce(func, wait) {
         let timeout;
@@ -120,6 +134,34 @@
             }
         }
         return detectedMap;
+    }
+
+    // キャラクターの全メディアをプリロード（初回表示のラグ低減）
+    function preloadCharacterImages(imageMap) {
+        if (!imageMap) return;
+        const urls = new Set();
+        for (const [key, value] of Object.entries(imageMap)) {
+            if (key === 'thumbnail') continue; // サムネは通常表示されないため除外
+            if (Array.isArray(value)) {
+                value.forEach(u => { if (typeof u === 'string' && u.trim()) urls.add(u.trim()); });
+            } else if (typeof value === 'string' && value.trim()) {
+                urls.add(value.trim());
+            }
+        }
+        if (urls.size === 0) return;
+        console.log(`🎬 ${urls.size} 件のメディアをプリロード開始`);
+        urls.forEach(url => {
+            if (isVideoUrl(url)) {
+                const v = document.createElement('video');
+                v.preload = 'auto';
+                v.muted = true;
+                v.playsInline = true;
+                v.src = url;
+            } else {
+                const img = new Image();
+                img.src = url;
+            }
+        });
     }
 
     // --- UI要素の作成 ---
@@ -339,6 +381,17 @@
 
     function findMatchingImageUrl(text) {
         if (!text || !currentImageMap) return null;
+
+        const signature = getTextSignature(text);
+        const now = Date.now();
+
+        // 直近の同一テキストに対する選択結果を再利用
+        // （generation_started と user_message_rendered の二重発火対策）
+        if (lastMatchCache.signature === signature &&
+            (now - lastMatchCache.timestamp) < MATCH_CACHE_TTL) {
+            return lastMatchCache.url;
+        }
+
         const keywordEntries = Object.entries(currentImageMap)
             .filter(([key]) => key !== "default" && key !== "thumbnail")
             .map(([key, url]) => ({
@@ -360,12 +413,18 @@
             try {
                 if (evaluateCondition(entry.condition, text)) {
                     const selected = getRandomImageSource(entry.url);
-                    if (selected) return selected;
+                    if (selected) {
+                        lastMatchCache = { signature, url: selected, timestamp: now };
+                        return selected;
+                    }
                 }
             } catch (error) {
                 console.error(`❌ 条件評価エラー "${entry.condition}":`, error);
             }
         }
+
+        // マッチなしもキャッシュ（同一メッセージでの再評価を防止）
+        lastMatchCache = { signature, url: null, timestamp: now };
         return null;
     }
 
@@ -384,7 +443,7 @@
     // --- 指定URLでの即時メディア更新 ---
     async function updateImageWithUrl(targetUrl) {
         if (isDefaultImageFailed) return;
-        
+
         // 空文字・不正値の強固なガード
         if (!targetUrl || typeof targetUrl !== 'string' || !targetUrl.trim()) {
             console.warn("⚠ 空または不正なメディアURLのため、デフォルト画像へ安全にフォールバックします。");
@@ -413,9 +472,9 @@
 
         console.log(`🖼 メディアを更新: ${newUrl}`);
         currentImageUrl = newUrl;
-        mediaContainer.innerHTML = '';
 
         if (isVideoUrl(newUrl)) {
+            // --- 動画：video要素自身がロード中表示を制御できるため即座に差し替え ---
             const videoElement = document.createElement('video');
             videoElement.src = newUrl;
             videoElement.autoplay = true;
@@ -427,15 +486,18 @@
             videoElement.style.height = '100%';
             videoElement.style.objectFit = 'contain';
             videoElement.onerror = () => handleMediaError(videoElement, newUrl);
+            mediaContainer.innerHTML = '';
             mediaContainer.appendChild(videoElement);
             videoElement.play().catch(() => {});
         } else {
+            // --- 画像：読み込み完了まで既存表示を維持（空白・ちらつき防止） ---
             const imgElement = document.createElement('img');
             imgElement.style.width = '100%';
             imgElement.style.height = '100%';
             imgElement.style.objectFit = 'contain';
 
             imgElement.onload = () => {
+                // ロード完了時点で、まだこれが最新リクエストであれば差し替える
                 if (currentImageUrl === newUrl) {
                     mediaContainer.innerHTML = '';
                     mediaContainer.appendChild(imgElement);
@@ -443,6 +505,7 @@
             };
             imgElement.onerror = () => handleMediaError(imgElement, newUrl);
             imgElement.src = newUrl;
+            // ※ここでは appendChild しない（onload 待ち）
         }
     }
 
@@ -496,6 +559,7 @@
         textModeButton.textContent = currentTextMode === 'user' ? 'UT' : 'AI';
         textModeButton.title = `クリックでテキストモード切り替え（現在: ${currentTextMode === 'user' ? 'ユーザー' : 'AI'}）`;
         console.log(`🔄 テキストモード切替: ${currentTextMode}`);
+        invalidateMatchCache();
         saveDisplayState();
         safeUpdateImage();
     }
@@ -596,6 +660,7 @@
         if (!charName) {
             if (currentImageMap === defaultImageMap) {
                 currentImageMap = await detectImageMapExtensions(defaultImageMap);
+                invalidateMatchCache();
                 safeUpdateImage();
             }
             return;
@@ -610,6 +675,8 @@
 
         if (!forceRefresh && imageMapCache.has(charName)) {
             currentImageMap = imageMapCache.get(charName);
+            invalidateMatchCache();
+            preloadCharacterImages(currentImageMap);
             safeUpdateImage();
             return;
         }
@@ -640,6 +707,9 @@
             console.warn(`⚠ ${charName} の拡張設定が見つかりませんでした。デフォルト画像を使用します。`);
             currentImageMap = await detectImageMapExtensions(defaultImageMap);
         }
+
+        invalidateMatchCache();
+        preloadCharacterImages(currentImageMap);
         safeUpdateImage();
     }
 
