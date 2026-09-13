@@ -194,77 +194,136 @@
     `;
     document.body.appendChild(customWindow);
 
-    // --- 条件評価・キーワードロジック (NOT / AND / OR 対応) ---
-    function evaluateBasicCondition(condStr, text) {
-        if (!condStr || !text) return false;
+    // --- 条件評価・キーワードロジック (カッコ / NOT / AND / OR 対応) ---
 
-        const lowerText = text.toLowerCase();
-        
-        // '+'（AND）または ','（OR）で区切る
-        const isAndMode = condStr.includes('+');
-        const delimiter = isAndMode ? '+' : ',';
+    // 単語形式の演算子を記号形式へ正規化（and→+, or→,, not→!）
+    function normalizeConditionExpression(expr) {
+        if (!expr || typeof expr !== 'string') return '';
+        return expr
+            .replace(/\band\b/gi, '+')
+            .replace(/\bor\b/gi, ',')
+            .replace(/\bnot\b/gi, '!');
+    }
 
-        const rawTokens = condStr.split(delimiter).map(t => t.trim()).filter(Boolean);
-        if (rawTokens.length === 0) return false;
-
-        const positiveKeywords = [];
-        const negativeKeywords = [];
-
-        // トークンを包含キーワード(Positive)と除外キーワード(Negative)に分離
-        for (let token of rawTokens) {
-            token = token.toLowerCase();
-            if (token.startsWith('!') || token.startsWith('not ')) {
-                const cleanNotKey = token.replace(/^(!|not\s*)/i, '').trim();
-                if (cleanNotKey) negativeKeywords.push(cleanNotKey);
-            } else {
-                positiveKeywords.push(token);
+    // トークナイザ：カッコ・否定・AND・OR・キーワードに分解
+    function tokenizeCondition(expr) {
+        const tokens = [];
+        let i = 0;
+        const len = expr.length;
+        while (i < len) {
+            const ch = expr[i];
+            if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+                i++;
+                continue;
             }
+            if (ch === '(' || ch === ')' || ch === '!' || ch === '+' || ch === ',') {
+                tokens.push({ type: ch, value: ch });
+                i++;
+                continue;
+            }
+            // キーワード：特殊文字に当たるまで読み進める（スペース許容）
+            let j = i;
+            while (j < len && !'()!+,'.includes(expr[j])) {
+                j++;
+            }
+            const raw = expr.slice(i, j).trim();
+            if (raw) {
+                tokens.push({ type: 'KEYWORD', value: raw });
+            }
+            i = j > i ? j : i + 1;
+        }
+        return tokens;
+    }
+
+    // 再帰下降パーサ（OR < AND < NOT < PRIMARY の優先順位）
+    function parseConditionTokens(tokens) {
+        let pos = 0;
+        const peek = () => tokens[pos];
+        const consume = (type) => {
+            const t = tokens[pos];
+            if (t && t.type === type) { pos++; return t; }
+            return null;
+        };
+
+        function parseOr() {
+            let node = parseAnd();
+            while (peek() && peek().type === ',') {
+                consume(',');
+                const right = parseAnd();
+                node = { type: 'OR', left: node, right };
+            }
+            return node;
         }
 
-        // 1. NOT（除外）チェック: 文章内に1つでも NOT キーワードがあれば即不一致
-        for (const negKey of negativeKeywords) {
-            if (lowerText.includes(negKey)) {
+        function parseAnd() {
+            let node = parseUnary();
+            while (peek() && peek().type === '+') {
+                consume('+');
+                const right = parseUnary();
+                node = { type: 'AND', left: node, right };
+            }
+            return node;
+        }
+
+        function parseUnary() {
+            if (peek() && peek().type === '!') {
+                consume('!');
+                const operand = parseUnary();
+                return { type: 'NOT', operand };
+            }
+            return parsePrimary();
+        }
+
+        function parsePrimary() {
+            const t = peek();
+            if (!t) return null;
+            if (t.type === '(') {
+                consume('(');
+                const inner = parseOr();
+                consume(')'); // 閉じカッコが無くても継続
+                return inner;
+            }
+            if (t.type === 'KEYWORD') {
+                consume('KEYWORD');
+                return { type: 'KEYWORD', value: t.value };
+            }
+            return null;
+        }
+
+        return parseOr();
+    }
+
+    // AST評価
+    function evaluateConditionNode(node, lowerText) {
+        if (!node) return false;
+        switch (node.type) {
+            case 'KEYWORD':
+                return lowerText.includes(node.value.toLowerCase());
+            case 'AND':
+                return evaluateConditionNode(node.left, lowerText)
+                    && evaluateConditionNode(node.right, lowerText);
+            case 'OR':
+                return evaluateConditionNode(node.left, lowerText)
+                    || evaluateConditionNode(node.right, lowerText);
+            case 'NOT':
+                return !evaluateConditionNode(node.operand, lowerText);
+            default:
                 return false;
-            }
         }
-
-        // 2. Positive（包含）チェック
-        if (positiveKeywords.length === 0) {
-            // NOT条件のみ指定（例: "!民家"）の場合、除外チェックを通れば一致とする
-            return true;
-        }
-
-        if (isAndMode) {
-            // AND 判定: すべての包含キーワードが含まれている必要がある
-            return positiveKeywords.every(posKey => lowerText.includes(posKey));
-        } else {
-            // OR 判定: 少なくとも1つの包含キーワードが含まれている必要がある
-            return positiveKeywords.some(posKey => lowerText.includes(posKey));
-        }
-    }
-
-    function processAnd(expr, text) {
-        const parts = expr.split(/\s+and\s+/i);
-        for (const part of parts) {
-            if (!evaluateBasicCondition(part, text)) return false;
-        }
-        return true;
-    }
-
-    function processOr(expr, text) {
-        const parts = expr.split(/\s+or\s+/i);
-        for (const part of parts) {
-            if (processAnd(part, text)) return true;
-        }
-        return false;
     }
 
     function evaluateCondition(condStr, text) {
         if (!condStr || !text) return false;
-        let processed = condStr;
-        if (processed.includes(' or ') || processed.includes(' OR ')) return processOr(processed, text);
-        if (processed.includes(' and ') || processed.includes(' AND ')) return processAnd(processed, text);
-        return evaluateBasicCondition(processed, text);
+        try {
+            const normalized = normalizeConditionExpression(condStr);
+            const tokens = tokenizeCondition(normalized);
+            if (tokens.length === 0) return false;
+            const ast = parseConditionTokens(tokens);
+            return evaluateConditionNode(ast, text.toLowerCase());
+        } catch (error) {
+            console.error(`❌ 条件評価エラー "${condStr}":`, error);
+            return false;
+        }
     }
 
     function getRandomImageSource(imageSource) {
@@ -285,7 +344,15 @@
             .map(([key, url]) => ({
                 condition: key,
                 url: url,
-                complexity: (key.match(/and/g) || []).length * 10 + (key.match(/or/g) || []).length * 5 + (key.match(/\+/g) || []).length * 8 + key.length
+                complexity:
+                    (key.match(/\band\b/gi) || []).length * 10 +
+                    (key.match(/\bor\b/gi)  || []).length * 5  +
+                    (key.match(/\+/g)       || []).length * 8  +
+                    (key.match(/,/g)        || []).length * 4  +
+                    (key.match(/!/g)        || []).length * 6  +
+                    (key.match(/\(/g)       || []).length * 3  +
+                    (key.match(/\)/g)       || []).length * 3  +
+                    key.length
             }))
             .sort((a, b) => b.complexity - a.complexity);
 
