@@ -37,6 +37,9 @@
     // --- findLastKeywordImage の探索上限（最新N件のみ走査） ---
     const MAX_MESSAGE_SCAN = 20;
 
+    // --- 送信傍受の多重登録防止フラグ ---
+    let isSendInterceptionInstalled = false;
+
     function getTextSignature(text) {
         if (!text || typeof text !== 'string') return '';
         // 末尾200文字をシグネチャとして使用
@@ -606,6 +609,52 @@
         }
     }
 
+    // --- 送信操作のキャプチャフェーズ傍受 ---
+    //   #send_textarea の Enter キー / #send_but クリックを他のリスナーより先に処理し、
+    //   SillyTavern 本体の送信パイプライン（Horde API 通信等）が始まる前に画像を切り替える。
+    //   これにより、Horde 未設定時のタイムアウト待ちによる遅延の影響を受けない。
+    function setupSendInterception() {
+        if (isSendInterceptionInstalled) return;
+        isSendInterceptionInstalled = true;
+
+        // Enter キー（Shift+Enter は改行なので除外）
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' || e.shiftKey) return;
+            const target = e.target;
+            if (!target || target.id !== 'send_textarea') return;
+            if (currentTextMode !== 'user') return;
+
+            const text = target.value;
+            if (!text || !text.trim()) return;
+
+            const matchedUrl = findMatchingImageUrl(text);
+            if (matchedUrl) {
+                console.log(`⌨️ Enter 傍受: "${text.slice(0, 40)}..." → ${matchedUrl}`);
+                updateImageWithUrl(matchedUrl);
+            }
+        }, true); // キャプチャフェーズ
+
+        // 送信ボタンクリック
+        document.addEventListener('click', (e) => {
+            const btn = e.target && e.target.closest ? e.target.closest('#send_but') : null;
+            if (!btn) return;
+            if (currentTextMode !== 'user') return;
+
+            const textarea = document.querySelector('#send_textarea');
+            if (!textarea) return;
+            const text = textarea.value;
+            if (!text || !text.trim()) return;
+
+            const matchedUrl = findMatchingImageUrl(text);
+            if (matchedUrl) {
+                console.log(`🖱 送信ボタン傍受: "${text.slice(0, 40)}..." → ${matchedUrl}`);
+                updateImageWithUrl(matchedUrl);
+            }
+        }, true); // キャプチャフェーズ
+
+        console.log("✅ 送信操作のキャプチャ傍受をインストールしました。");
+    }
+
     // --- テキストモード切り替え ---
     function toggleTextMode() {
         currentTextMode = currentTextMode === 'user' ? 'ai' : 'user';
@@ -1075,28 +1124,19 @@
 
                 safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
 
-                // ★ ユーザー操作系イベントは「デバウンスなしで直接呼ぶ」。
-                //   理由：SillyTavernの他拡張が USER_MESSAGE_RENDERED 後に重い同期処理
-                //   （"Running extension interceptors" 等）を行うと、setTimeout タイマー
-                //   コールバックの実行が遅延し、画像切替が数秒〜10秒遅れることがある。
-                //   同期部分（findLastKeywordImage）を他拡張の処理前に実行することで、
-                //   画像要素のロードを先行開始できる。
+                // フォールバック用の即時更新（Enter傍受が間に合わなかったケース用）
                 const immediateUpdate = () => {
                     updateImage();
                 };
 
-                // AI メッセージ・ユーザーメッセージの描画完了時は即時更新
                 safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, immediateUpdate);
                 safeOn(eventTypes.USER_MESSAGE_RENDERED, immediateUpdate);
 
-                // メッセージ削除・編集・チャット読み込み時は即時更新
                 if (eventTypes.MESSAGE_DELETED) safeOn(eventTypes.MESSAGE_DELETED, immediateUpdate);
                 if (eventTypes.MESSAGE_EDITED) safeOn(eventTypes.MESSAGE_EDITED, immediateUpdate);
                 if (eventTypes.CHAT_LOADED) safeOn(eventTypes.CHAT_LOADED, immediateUpdate);
 
-                // ★ MESSAGE_SENT で送信メッセージ本文を取得し、即時更新を試みる。
-                //   data が文字列（生成タイプ以外）またはオブジェクト（text/message/mes）の場合のみ処理。
-                //   DOMフォールバックは行わない（前回メッセージ誤取得による一瞬の別ファイル表示を防ぐ）。
+                // MESSAGE_SENT フォールバック（クイックリプライ等、Enter/クリック以外の送信経路用）
                 const handleMessageSent = (data) => {
                     if (currentTextMode !== 'user') return;
 
@@ -1139,6 +1179,7 @@
 
     // --- 初期ロードとポーリング ---
     setupEventSourceListeners();
+    setupSendInterception();  // ★ 送信操作の傍受を開始
     loadCharacterData(true);
     setupChatDomObserver();
 
