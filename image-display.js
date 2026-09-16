@@ -831,7 +831,11 @@
     }
 
     function openCustomWindow() {
-        if (currentMode !== 'normal') return;
+        // ★ 全画面・左半分モードであれば、まず通常モードへ強制移行
+        if (currentMode !== 'normal') {
+            applyNormalMode();
+            saveDisplayState();
+        }
         document.getElementById('custom-width').value = imageContainer.offsetWidth;
         document.getElementById('custom-height').value = imageContainer.offsetHeight;
         document.getElementById('custom-left').value = parseInt(imageContainer.style.left) || DEFAULT_LEFT;
@@ -965,6 +969,8 @@
         maximizeButton.classList.add('enabled');
         halfMaximizeButton.classList.remove('disabled');
         halfMaximizeButton.classList.add('enabled');
+        customButton.classList.remove('disabled');
+        customButton.classList.add('enabled');
         currentMode = 'normal';
     }
 
@@ -989,6 +995,9 @@
         maximizeButton.classList.add('disabled');
         halfMaximizeButton.classList.remove('disabled');
         halfMaximizeButton.classList.add('enabled');
+        // ★ カスタムボタンは常に有効のまま
+        customButton.classList.remove('disabled');
+        customButton.classList.add('enabled');
         currentMode = 'maximized';
     }
 
@@ -1009,10 +1018,13 @@
         resizeHandle.style.display = 'none';
         header.style.cursor = 'default';
         imageContainer.classList.add('half-maximized');
-        maximizeButton.classList.remove('enabled');
+        maximizeButton.classList.remove('disabled');
         maximizeButton.classList.add('enabled');
-        halfMaximizeButton.classList.remove('disabled');
+        halfMaximizeButton.classList.remove('enabled');
         halfMaximizeButton.classList.add('disabled');
+        // ★ カスタムボタンは常に有効のまま
+        customButton.classList.remove('disabled');
+        customButton.classList.add('enabled');
         currentMode = 'halfMaximized';
     }
 
@@ -1124,46 +1136,35 @@
 
                 safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
 
-                // フォールバック用の即時更新（Enter傍受が間に合わなかったケース用）
+                // ★ ユーザー操作系イベントは「デバウンスなしで直接呼ぶ」。
+                //   理由：SillyTavernの他拡張が USER_MESSAGE_RENDERED 後に重い同期処理
+                //   （"Running extension interceptors" 等）を行うと、setTimeout タイマー
+                //   コールバックの実行が遅延し、画像切替が数秒〜10秒遅れることがある。
+                //   同期部分（findLastKeywordImage）を他拡張の処理前に実行することで、
+                //   画像要素のロードを先行開始できる。
                 const immediateUpdate = () => {
                     updateImage();
                 };
 
+                // AI メッセージ・ユーザーメッセージの描画完了時は即時更新
                 safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, immediateUpdate);
                 safeOn(eventTypes.USER_MESSAGE_RENDERED, immediateUpdate);
 
+                // メッセージ削除・編集・チャット読み込み時は即時更新
                 if (eventTypes.MESSAGE_DELETED) safeOn(eventTypes.MESSAGE_DELETED, immediateUpdate);
                 if (eventTypes.MESSAGE_EDITED) safeOn(eventTypes.MESSAGE_EDITED, immediateUpdate);
                 if (eventTypes.CHAT_LOADED) safeOn(eventTypes.CHAT_LOADED, immediateUpdate);
 
-                // MESSAGE_SENT フォールバック（クイックリプライ等、Enter/クリック以外の送信経路用）
-                const handleMessageSent = (data) => {
-                    if (currentTextMode !== 'user') return;
-
-                    let sentText = "";
-                    if (typeof data === 'string') {
-                        const generationTypes = new Set([
-                            'normal', 'regenerate', 'swipe', 'impersonate',
-                            'continue', 'quiet', 'command'
-                        ]);
-                        const trimmed = data.trim();
-                        if (trimmed && !generationTypes.has(trimmed.toLowerCase())) {
-                            sentText = trimmed;
-                        }
-                    } else if (data && typeof data === 'object') {
-                        if (typeof data.text === 'string') sentText = data.text;
-                        else if (typeof data.message === 'string') sentText = data.message;
-                        else if (typeof data.mes === 'string') sentText = data.mes;
-                    }
-
-                    if (sentText && sentText.trim()) {
-                        const matchedUrl = findMatchingImageUrl(sentText);
-                        if (matchedUrl) {
-                            updateImageWithUrl(matchedUrl);
-                        }
-                    }
-                };
-                safeOn(eventTypes.MESSAGE_SENT, handleMessageSent);
+                // ★ MESSAGE_SENT / GENERATION_STARTED への handleImmediateTextMatch 登録は削除。
+                //   理由：
+                //   - これらのイベント発火時点では、新しいユーザーメッセージが DOM に
+                //     追加されていないことがある。
+                //   - #send_textarea は既にクリア済み or 次の入力途中のテキストが入っている
+                //     可能性があり、フォールバックで誤ったテキストを取得してしまう。
+                //   - その結果、キーワード切替時に前のキーワードや次の入力途中の
+                //     キーワードで誤マッチし、一瞬別のメディアが表示される不具合が発生する。
+                //   - USER_MESSAGE_RENDERED が発火した時点では DOM に新メッセージが
+                //     追加済みなので、findLastKeywordImage が正しいテキストを取得できる。
 
                 const onCharacterOrChatChanged = () => {
                     loadCharacterData(true);
