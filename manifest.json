@@ -1,5 +1,6 @@
 {
   "display_name": "Image Display Extension",
+  "loading_order": 5,
   "js": "image-display.js",
   "css": "image-display.css",
   "author": "Your Name",
