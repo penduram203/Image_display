@@ -1,4 +1,4 @@
-(function () {
+(function () {(function () {
     console.log("Image Display: 初期化を開始します。");
     const MODULE_NAME = 'image_display';
     const OLD_STORAGE_KEY = 'imageDisplayState';
@@ -22,6 +22,10 @@
     let lastStreamingText = '';
     const STREAMING_DELAY = 500;
     let chatDomObserver = null;
+
+    // ★ 追加: 外部連携用の強制表示状態
+    let isOverrideActive = false;
+    let overrideImageUrl = null;
 
     // --- マッチキャッシュ（二重発火によるちらつき防止） ---
     let lastMatchCache = { signature: null, url: null, timestamp: 0 };
@@ -566,8 +570,18 @@
     }
 
     // --- DOM基準のメディア表示更新処理 ---
+    // ★ 変更: 強制表示中はキーワードマッチをスキップ
     async function updateImage() {
         if (isDefaultImageFailed) return;
+
+        // 強制表示中は上書きしない
+        if (isOverrideActive && overrideImageUrl) {
+            if (currentImageUrl !== overrideImageUrl) {
+                await updateImageWithUrl(overrideImageUrl);
+            }
+            return;
+        }
+
         const keywordMedia = findLastKeywordImage();
         let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
 
@@ -1190,4 +1204,59 @@
         pollCount++;
         if (pollCount > 10) clearInterval(initialPoll);
     }, 1000);
+
+    // ============================================================
+    // ★ 追加: 外部連携用API
+    // ============================================================
+    window.ImageDisplayExtension = {
+        /**
+         * 指定URLの画像を強制表示（キーワードマッチを無視）
+         * @param {string} url - 表示する画像URL
+         * @returns {Promise<boolean>}
+         */
+        setOverrideImage: async function (url) {
+            if (!url || typeof url !== 'string' || !url.trim()) {
+                console.warn('[ImageDisplayExtension] 無効なURLが渡されました:', url);
+                return false;
+            }
+            overrideImageUrl = url.trim();
+            isOverrideActive = true;
+            console.log(`🎯 外部連携: 画像を強制表示 ${overrideImageUrl}`);
+            try {
+                await updateImageWithUrl(overrideImageUrl);
+                return true;
+            } catch (e) {
+                console.error('[ImageDisplayExtension] 強制表示に失敗:', e);
+                return false;
+            }
+        },
+
+        /**
+         * 強制表示を解除し、通常のキーワードマッチに戻す
+         */
+        clearOverrideImage: function () {
+            if (!isOverrideActive) return;
+            isOverrideActive = false;
+            overrideImageUrl = null;
+            console.log(`🎯 外部連携: 強制表示を解除`);
+            safeUpdateImage();
+        },
+
+        /**
+         * 現在表示中の画像URLを取得
+         * @returns {string|null}
+         */
+        getCurrentImageUrl: function () {
+            return currentImageUrl;
+        },
+
+        /**
+         * 強制表示がアクティブかどうか
+         * @returns {boolean}
+         */
+        isOverride: function () {
+            return isOverrideActive;
+        },
+    };
+    console.log("✅ Image Display Extension API を window.ImageDisplayExtension に公開しました");
 })();
