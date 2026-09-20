@@ -1240,12 +1240,25 @@
         if (galleryOpen === lastGalleryState) return; // 変化なしなら何もしない
         lastGalleryState = galleryOpen;
 
+        // IDE自身のコントロールボタン群
         if (galleryOpen) {
             controlContainer.style.display = 'none';
             console.log('📷 ギャラリー表示中 → コントロールボタンを非表示');
         } else {
             controlContainer.style.display = 'flex';
             console.log('📷 ギャラリー非表示 → コントロールボタンを再表示');
+        }
+
+        // ★ GIC（Generate Image Controller）のトグルボタンも連動して非表示/再表示
+        const gicButton = document.getElementById('gic-release-override-button');
+        if (gicButton) {
+            if (galleryOpen) {
+                gicButton.style.display = 'none';
+                console.log('📷 ギャラリー表示中 → GICトグルボタンを非表示');
+            } else {
+                gicButton.style.display = '';   // 元のスタイル（インラインスタイル）に戻す
+                console.log('📷 ギャラリー非表示 → GICトグルボタンを再表示');
+            }
         }
     }
 
