@@ -1,4 +1,4 @@
-(function () {(function () {
+(function () {
     console.log("Image Display: 初期化を開始します。");
     const MODULE_NAME = 'image_display';
     const OLD_STORAGE_KEY = 'imageDisplayState';
@@ -23,7 +23,7 @@
     const STREAMING_DELAY = 500;
     let chatDomObserver = null;
 
-    // ★ 追加: 外部連携用の強制表示状態
+    // --- 外部連携用：強制表示（override）状態 ---
     let isOverrideActive = false;
     let overrideImageUrl = null;
 
@@ -570,11 +570,11 @@
     }
 
     // --- DOM基準のメディア表示更新処理 ---
-    // ★ 変更: 強制表示中はキーワードマッチをスキップ
     async function updateImage() {
         if (isDefaultImageFailed) return;
 
-        // 強制表示中は上書きしない
+        // ★ 外部連携による強制表示中はキーワードマッチをスキップし、
+        //   指定された画像を維持する。
         if (isOverrideActive && overrideImageUrl) {
             if (currentImageUrl !== overrideImageUrl) {
                 await updateImageWithUrl(overrideImageUrl);
@@ -1169,17 +1169,6 @@
                 if (eventTypes.MESSAGE_EDITED) safeOn(eventTypes.MESSAGE_EDITED, immediateUpdate);
                 if (eventTypes.CHAT_LOADED) safeOn(eventTypes.CHAT_LOADED, immediateUpdate);
 
-                // ★ MESSAGE_SENT / GENERATION_STARTED への handleImmediateTextMatch 登録は削除。
-                //   理由：
-                //   - これらのイベント発火時点では、新しいユーザーメッセージが DOM に
-                //     追加されていないことがある。
-                //   - #send_textarea は既にクリア済み or 次の入力途中のテキストが入っている
-                //     可能性があり、フォールバックで誤ったテキストを取得してしまう。
-                //   - その結果、キーワード切替時に前のキーワードや次の入力途中の
-                //     キーワードで誤マッチし、一瞬別のメディアが表示される不具合が発生する。
-                //   - USER_MESSAGE_RENDERED が発火した時点では DOM に新メッセージが
-                //     追加済みなので、findLastKeywordImage が正しいテキストを取得できる。
-
                 const onCharacterOrChatChanged = () => {
                     loadCharacterData(true);
                 };
@@ -1205,9 +1194,9 @@
         if (pollCount > 10) clearInterval(initialPoll);
     }, 1000);
 
-    // ============================================================
-    // ★ 追加: 外部連携用API
-    // ============================================================
+    // ===================================================================
+    // ===== 外部連携用API（Generate Image Controller などから呼び出す） =====
+    // ===================================================================
     window.ImageDisplayExtension = {
         /**
          * 指定URLの画像を強制表示（キーワードマッチを無視）
@@ -1215,20 +1204,12 @@
          * @returns {Promise<boolean>}
          */
         setOverrideImage: async function (url) {
-            if (!url || typeof url !== 'string' || !url.trim()) {
-                console.warn('[ImageDisplayExtension] 無効なURLが渡されました:', url);
-                return false;
-            }
+            if (!url || typeof url !== 'string' || !url.trim()) return false;
             overrideImageUrl = url.trim();
             isOverrideActive = true;
             console.log(`🎯 外部連携: 画像を強制表示 ${overrideImageUrl}`);
-            try {
-                await updateImageWithUrl(overrideImageUrl);
-                return true;
-            } catch (e) {
-                console.error('[ImageDisplayExtension] 強制表示に失敗:', e);
-                return false;
-            }
+            await updateImageWithUrl(overrideImageUrl);
+            return true;
         },
 
         /**
@@ -1244,7 +1225,6 @@
 
         /**
          * 現在表示中の画像URLを取得
-         * @returns {string|null}
          */
         getCurrentImageUrl: function () {
             return currentImageUrl;
@@ -1252,7 +1232,6 @@
 
         /**
          * 強制表示がアクティブかどうか
-         * @returns {boolean}
          */
         isOverride: function () {
             return isOverrideActive;
