@@ -1195,6 +1195,88 @@
     }, 1000);
 
     // ===================================================================
+    // ===== Gallery連動：公式ギャラリー表示中はコントロールボタンを非表示 =====
+    // ===================================================================
+
+    /**
+     * SillyTavern公式ギャラリーが表示中かどうかを判定
+     * 複数の候補セレクタをチェックし、いずれかが可視状態なら true を返す
+     */
+    function isGalleryOpen() {
+        const candidates = document.querySelectorAll([
+            '#gallery_container',
+            '.gallery-container',
+            '.gallery_container',
+            '#gallery',
+            '.gallery',
+            '[data-gallery-container]',
+            '.gallery-grid',
+            '#gallery-grid',
+        ].join(','));
+
+        for (const el of candidates) {
+            if (!el) continue;
+            const style = window.getComputedStyle(el);
+            // display/visibility/opacity のいずれかで隠れていればスキップ
+            if (style.display === 'none') continue;
+            if (style.visibility === 'hidden') continue;
+            if (parseFloat(style.opacity) === 0) continue;
+            // offsetParent が null なら非表示扱い
+            if (el.offsetParent === null && style.position !== 'fixed') continue;
+            // サイズがゼロなら非表示扱い
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * ギャラリーの開閉状態に応じてコントロールボタン群の表示/非表示を切り替える
+     */
+    let lastGalleryState = null;
+    function updateControlContainerVisibility() {
+        const galleryOpen = isGalleryOpen();
+        if (galleryOpen === lastGalleryState) return; // 変化なしなら何もしない
+        lastGalleryState = galleryOpen;
+
+        if (galleryOpen) {
+            controlContainer.style.display = 'none';
+            console.log('📷 ギャラリー表示中 → コントロールボタンを非表示');
+        } else {
+            controlContainer.style.display = 'flex';
+            console.log('📷 ギャラリー非表示 → コントロールボタンを再表示');
+        }
+    }
+
+    /**
+     * ギャラリーの開閉を監視
+     * - body全体のDOM変更をMutationObserverで監視
+     * - 併せて定期的にチェック（スタイル変化で検出できないケースの保険）
+     */
+    function setupGalleryObserver() {
+        const galleryObserver = new MutationObserver(() => {
+            updateControlContainerVisibility();
+        });
+        galleryObserver.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['style', 'class'],
+        });
+
+        // 定期的なチェック（保険）
+        setInterval(updateControlContainerVisibility, 300);
+
+        // 初回チェック
+        updateControlContainerVisibility();
+        console.log('📷 ギャラリー連動監視を開始しました');
+    }
+
+    // ギャラリー連動を開始
+    setupGalleryObserver();
+
+    // ===================================================================
     // ===== 外部連携用API（Generate Image Controller などから呼び出す） =====
     // ===================================================================
     window.ImageDisplayExtension = {
