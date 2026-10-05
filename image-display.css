@@ -146,7 +146,7 @@ button.enabled {
   color: white;
   border-radius: 5px;
   padding: 10px;
-  z-index: 10001;
+  z-index: 2147483647 !important;
   box-shadow: 0 4px 8px rgba(0,0,0,0.5);
   display: none; /* 初期状態は非表示 */
 }
