@@ -1,4 +1,4 @@
-(function () {(function () {
+(function () {
     console.log("Image Display: 初期化を開始します。");
     const MODULE_NAME = 'image_display';
     const OLD_STORAGE_KEY = 'imageDisplayState';
@@ -897,10 +897,7 @@
             preNormalState,
             bgColor: colorPicker.value,
             currentMode,
-            textMode: currentTextMode,
-            // ★ override 状態も永続化（リロード後に復元するため）
-            isOverrideActive,
-            overrideImageUrl,
+            textMode: currentTextMode
         };
         const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
         if (context && context.extensionSettings) {
@@ -946,19 +943,6 @@
                     textModeButton.textContent = currentTextMode === 'user' ? 'UT' : 'AI';
                     textModeButton.title = `クリックでテキストモード切り替え（現在: ${currentTextMode === 'user' ? 'ユーザー' : 'AI'}）`;
                 }
-
-                // ★ override 状態の復元（後段の updateImage 呼び出しで反映される）
-                if (state.isOverrideActive &&
-                    typeof state.overrideImageUrl === 'string' &&
-                    state.overrideImageUrl.trim()) {
-                    isOverrideActive = true;
-                    overrideImageUrl = state.overrideImageUrl.trim();
-                    console.log(`[Image Display] override状態を復元: ${overrideImageUrl}`);
-                } else {
-                    isOverrideActive = false;
-                    overrideImageUrl = null;
-                }
-
                 switch (currentMode) {
                     case 'maximized':
                         applyMaximizeMode();
@@ -1059,11 +1043,6 @@
     }
 
     restoreDisplayState();
-
-    // ★ override 状態が復元されている場合、初回描画を先行させる
-    if (isOverrideActive && overrideImageUrl) {
-        safeUpdateImage();
-    }
 
     // --- イベントリスナー設定 ---
     colorPicker.addEventListener('input', () => {
@@ -1224,23 +1203,27 @@
      * 複数の候補セレクタをチェックし、いずれかが可視状態なら true を返す
      */
     function isGalleryOpen() {
-    // 汎用クラス（.gallery, .gallery-grid）は誤検出の元なので除外。
-    // SillyTavern 公式ギャラリーを示す具体的なセレクタのみ残す。
         const candidates = document.querySelectorAll([
             '#gallery_container',
             '.gallery-container',
             '.gallery_container',
             '#gallery',
+            '.gallery',
             '[data-gallery-container]',
+            '.gallery-grid',
+            '#gallery-grid',
         ].join(','));
 
         for (const el of candidates) {
             if (!el) continue;
             const style = window.getComputedStyle(el);
+            // display/visibility/opacity のいずれかで隠れていればスキップ
             if (style.display === 'none') continue;
             if (style.visibility === 'hidden') continue;
             if (parseFloat(style.opacity) === 0) continue;
+            // offsetParent が null なら非表示扱い
             if (el.offsetParent === null && style.position !== 'fixed') continue;
+            // サイズがゼロなら非表示扱い
             const rect = el.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) continue;
             return true;
@@ -1295,20 +1278,17 @@
             attributeFilter: ['style', 'class'],
         });
 
+        // 定期的なチェック（保険）
         setInterval(updateControlContainerVisibility, 300);
 
-        // ★ 初回判定は遅延（DOM構築完了後）
-        setTimeout(updateControlContainerVisibility, 1000);
+        // 初回チェック
+        updateControlContainerVisibility();
         console.log('📷 ギャラリー連動監視を開始しました');
     }
-    
+
     // ギャラリー連動を開始
     setupGalleryObserver();
 
-    // ★ 安全弁: 起動直後は必ずボタンを表示
-    const _cc = document.getElementById('image-control-container');
-    if (_cc) _cc.style.display = 'flex';
-    
     // ===================================================================
     // ===== 外部連携用API（Generate Image Controller などから呼び出す） =====
     // ===================================================================
@@ -1324,7 +1304,6 @@
             isOverrideActive = true;
             console.log(`🎯 外部連携: 画像を強制表示 ${overrideImageUrl}`);
             await updateImageWithUrl(overrideImageUrl);
-            saveDisplayState();   // ★ override 状態を永続化
             return true;
         },
 
@@ -1336,7 +1315,6 @@
             isOverrideActive = false;
             overrideImageUrl = null;
             console.log(`🎯 外部連携: 強制表示を解除`);
-            saveDisplayState();   // ★ override 解除を永続化
             safeUpdateImage();
         },
 
