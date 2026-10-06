@@ -1224,27 +1224,23 @@
      * 複数の候補セレクタをチェックし、いずれかが可視状態なら true を返す
      */
     function isGalleryOpen() {
+    // 汎用クラス（.gallery, .gallery-grid）は誤検出の元なので除外。
+    // SillyTavern 公式ギャラリーを示す具体的なセレクタのみ残す。
         const candidates = document.querySelectorAll([
             '#gallery_container',
             '.gallery-container',
             '.gallery_container',
             '#gallery',
-            '.gallery',
             '[data-gallery-container]',
-            '.gallery-grid',
-            '#gallery-grid',
         ].join(','));
 
         for (const el of candidates) {
             if (!el) continue;
             const style = window.getComputedStyle(el);
-            // display/visibility/opacity のいずれかで隠れていればスキップ
             if (style.display === 'none') continue;
             if (style.visibility === 'hidden') continue;
             if (parseFloat(style.opacity) === 0) continue;
-            // offsetParent が null なら非表示扱い
             if (el.offsetParent === null && style.position !== 'fixed') continue;
-            // サイズがゼロなら非表示扱い
             const rect = el.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) continue;
             return true;
@@ -1299,17 +1295,20 @@
             attributeFilter: ['style', 'class'],
         });
 
-        // 定期的なチェック（保険）
         setInterval(updateControlContainerVisibility, 300);
 
-        // 初回チェック
-        updateControlContainerVisibility();
+        // ★ 初回判定は遅延（DOM構築完了後）
+        setTimeout(updateControlContainerVisibility, 1000);
         console.log('📷 ギャラリー連動監視を開始しました');
     }
-
+    
     // ギャラリー連動を開始
     setupGalleryObserver();
 
+    // ★ 安全弁: 起動直後は必ずボタンを表示
+    const _cc = document.getElementById('image-control-container');
+    if (_cc) _cc.style.display = 'flex';
+    
     // ===================================================================
     // ===== 外部連携用API（Generate Image Controller などから呼び出す） =====
     // ===================================================================
