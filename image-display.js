@@ -1060,11 +1060,6 @@
 
     restoreDisplayState();
 
-    // ★ override 状態が復元されている場合、初回描画を先行させる
-    if (isOverrideActive && overrideImageUrl) {
-        safeUpdateImage();
-    }
-
     // --- イベントリスナー設定 ---
     colorPicker.addEventListener('input', () => {
         imageContainer.style.backgroundColor = colorPicker.value;
