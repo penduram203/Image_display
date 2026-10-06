@@ -1,4 +1,4 @@
-(function () {(function () {
+(function () {
     console.log("Image Display: 初期化を開始します。");
     const MODULE_NAME = 'image_display';
     const OLD_STORAGE_KEY = 'imageDisplayState';
@@ -947,7 +947,7 @@
                     textModeButton.title = `クリックでテキストモード切り替え（現在: ${currentTextMode === 'user' ? 'ユーザー' : 'AI'}）`;
                 }
 
-                // ★ override 状態の復元（後段の updateImage 呼び出しで反映される）
+                // ★ override 状態の復元
                 if (state.isOverrideActive &&
                     typeof state.overrideImageUrl === 'string' &&
                     state.overrideImageUrl.trim()) {
