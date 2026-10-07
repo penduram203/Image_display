@@ -163,7 +163,7 @@
         if (!imageMap) return;
         const urls = new Set();
         for (const [key, value] of Object.entries(imageMap)) {
-            if (key === 'thumbnail') continue; // サムネは通常表示されないため除外
+            if (key === 'thumbnail') continue;
             if (Array.isArray(value)) {
                 value.forEach(u => { if (typeof u === 'string' && u.trim()) urls.add(u.trim()); });
             } else if (typeof value === 'string' && value.trim()) {
@@ -260,7 +260,6 @@
 
     // --- 条件評価・キーワードロジック (カッコ / NOT / AND / OR 対応) ---
 
-    // 単語形式の演算子を記号形式へ正規化（and→+, or→,, not→!）
     function normalizeConditionExpression(expr) {
         if (!expr || typeof expr !== 'string') return '';
         return expr
@@ -269,7 +268,6 @@
             .replace(/\bnot\b/gi, '!');
     }
 
-    // トークナイザ：カッコ・否定・AND・OR・キーワードに分解
     function tokenizeCondition(expr) {
         const tokens = [];
         let i = 0;
@@ -285,7 +283,6 @@
                 i++;
                 continue;
             }
-            // キーワード：特殊文字に当たるまで読み進める（スペース許容）
             let j = i;
             while (j < len && !'()!+,'.includes(expr[j])) {
                 j++;
@@ -299,7 +296,6 @@
         return tokens;
     }
 
-    // 再帰下降パーサ（OR < AND < NOT < PRIMARY の優先順位）
     function parseConditionTokens(tokens) {
         let pos = 0;
         const peek = () => tokens[pos];
@@ -344,7 +340,7 @@
             if (t.type === '(') {
                 consume('(');
                 const inner = parseOr();
-                consume(')'); // 閉じカッコが無くても継続
+                consume(')');
                 return inner;
             }
             if (t.type === 'KEYWORD') {
@@ -357,7 +353,6 @@
         return parseOr();
     }
 
-    // AST評価
     function evaluateConditionNode(node, lowerText) {
         if (!node) return false;
         switch (node.type) {
@@ -376,7 +371,6 @@
         }
     }
 
-    // 条件式 AST をキャッシュ付きで取得
     function getParsedConditionAst(condStr) {
         if (!condStr || typeof condStr !== 'string') return null;
         let ast = parsedConditionCache.get(condStr);
@@ -421,7 +415,6 @@
         return (typeof imageSource === 'string' && imageSource.trim() !== '') ? imageSource : null;
     }
 
-    // ソート済みキーワードエントリをキャッシュ付きで取得
     function getSortedKeywordEntries() {
         if (!currentImageMap) return [];
         if (sortedKeywordEntriesCache && sortedKeywordEntriesCacheSource === currentImageMap) {
@@ -453,8 +446,6 @@
         const signature = getTextSignature(text);
         const now = Date.now();
 
-        // 直近の同一テキストに対する選択結果を再利用
-        // （同一メッセージでの二重発火によるちらつき防止）
         if (lastMatchCache.signature === signature &&
             (now - lastMatchCache.timestamp) < MATCH_CACHE_TTL) {
             return lastMatchCache.url;
@@ -476,7 +467,6 @@
             }
         }
 
-        // マッチなしもキャッシュ（同一メッセージでの再評価を防止）
         lastMatchCache = { signature, url: null, timestamp: now };
         return null;
     }
@@ -485,7 +475,6 @@
         const isUserMode = currentTextMode === 'user';
         const selector = `.mes[is_user="${isUserMode}"] .mes_text`;
         const messages = Array.from(document.querySelectorAll(selector));
-        // 最新 MAX_MESSAGE_SCAN 件のみ走査（高速化）
         const start = Math.max(0, messages.length - MAX_MESSAGE_SCAN);
         for (let i = messages.length - 1; i >= start; i--) {
             const textContent = messages[i].textContent || messages[i].innerText || "";
@@ -499,7 +488,6 @@
     async function updateImageWithUrl(targetUrl) {
         if (isDefaultImageFailed) return;
 
-        // 空文字・不正値の強固なガード
         if (!targetUrl || typeof targetUrl !== 'string' || !targetUrl.trim()) {
             console.warn("⚠ 空または不正なメディアURLのため、デフォルト画像へ安全にフォールバックします。");
             const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
@@ -529,7 +517,6 @@
         currentImageUrl = newUrl;
 
         if (isVideoUrl(newUrl)) {
-            // --- 動画：video要素自身がロード中表示を制御できるため即座に差し替え ---
             const videoElement = document.createElement('video');
             videoElement.src = newUrl;
             videoElement.autoplay = true;
@@ -545,14 +532,12 @@
             mediaContainer.appendChild(videoElement);
             videoElement.play().catch(() => {});
         } else {
-            // --- 画像：読み込み完了まで既存表示を維持（空白・ちらつき防止） ---
             const imgElement = document.createElement('img');
             imgElement.style.width = '100%';
             imgElement.style.height = '100%';
             imgElement.style.objectFit = 'contain';
 
             imgElement.onload = () => {
-                // ロード完了時点で、まだこれが最新リクエストであれば差し替える
                 if (currentImageUrl === newUrl) {
                     mediaContainer.innerHTML = '';
                     mediaContainer.appendChild(imgElement);
@@ -561,11 +546,9 @@
             imgElement.onerror = () => handleMediaError(imgElement, newUrl);
             imgElement.src = newUrl;
 
-            // デコードを先行開始（メインスレッドが空いた瞬間にデコード完了）
             if (typeof imgElement.decode === 'function') {
                 imgElement.decode().catch(() => {});
             }
-            // ※ここでは appendChild しない（onload 待ち）
         }
     }
 
@@ -573,15 +556,26 @@
     async function updateImage() {
         if (isDefaultImageFailed) return;
 
-        // ★ 外部連携による強制表示中はキーワードマッチをスキップし、
-        //   指定された画像を維持する。
-        if (isOverrideActive && overrideImageUrl) {
-            if (currentImageUrl !== overrideImageUrl) {
-                await updateImageWithUrl(overrideImageUrl);
+        // ★ 外部連携による強制表示（override）モード
+        if (isOverrideActive) {
+            if (overrideImageUrl) {
+                // 指定URLがあればそれを表示
+                if (currentImageUrl !== overrideImageUrl) {
+                    await updateImageWithUrl(overrideImageUrl);
+                }
+            } else {
+                // URL未指定 → デフォルト画像を表示
+                const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
+                if (fallback && typeof fallback === 'string' && fallback.trim()) {
+                    if (currentImageUrl !== fallback) {
+                        await updateImageWithUrl(fallback);
+                    }
+                }
             }
             return;
         }
 
+        // 通常モード: キーワードマッチ
         const keywordMedia = findLastKeywordImage();
         let newUrl = keywordMedia || getRandomImageSource(currentImageMap.default) || currentImageMap.default;
 
@@ -624,14 +618,10 @@
     }
 
     // --- 送信操作のキャプチャフェーズ傍受 ---
-    //   #send_textarea の Enter キー / #send_but クリックを他のリスナーより先に処理し、
-    //   SillyTavern 本体の送信パイプライン（Horde API 通信等）が始まる前に画像を切り替える。
-    //   これにより、Horde 未設定時のタイムアウト待ちによる遅延の影響を受けない。
     function setupSendInterception() {
         if (isSendInterceptionInstalled) return;
         isSendInterceptionInstalled = true;
 
-        // Enter キー（Shift+Enter は改行なので除外）
         document.addEventListener('keydown', (e) => {
             if (e.key !== 'Enter' || e.shiftKey) return;
             const target = e.target;
@@ -646,9 +636,8 @@
                 console.log(`⌨️ Enter 傍受: "${text.slice(0, 40)}..." → ${matchedUrl}`);
                 updateImageWithUrl(matchedUrl);
             }
-        }, true); // キャプチャフェーズ
+        }, true);
 
-        // 送信ボタンクリック
         document.addEventListener('click', (e) => {
             const btn = e.target && e.target.closest ? e.target.closest('#send_but') : null;
             if (!btn) return;
@@ -664,7 +653,7 @@
                 console.log(`🖱 送信ボタン傍受: "${text.slice(0, 40)}..." → ${matchedUrl}`);
                 updateImageWithUrl(matchedUrl);
             }
-        }, true); // キャプチャフェーズ
+        }, true);
 
         console.log("✅ 送信操作のキャプチャ傍受をインストールしました。");
     }
@@ -770,7 +759,6 @@
         return null;
     }
 
-    // キャラクター切替時に関連キャッシュをすべて無効化
     function invalidateAllCaches() {
         invalidateMatchCache();
         invalidateSortedEntriesCache();
@@ -845,7 +833,6 @@
     }
 
     function openCustomWindow() {
-        // ★ 全画面・左半分モードであれば、まず通常モードへ強制移行
         if (currentMode !== 'normal') {
             applyNormalMode();
             saveDisplayState();
@@ -898,7 +885,6 @@
             bgColor: colorPicker.value,
             currentMode,
             textMode: currentTextMode,
-            // ★ override 状態も永続化（リロード後に復元するため）
             isOverrideActive,
             overrideImageUrl,
         };
@@ -948,12 +934,12 @@
                 }
 
                 // ★ override 状態の復元
-                if (state.isOverrideActive &&
-                    typeof state.overrideImageUrl === 'string' &&
-                    state.overrideImageUrl.trim()) {
+                if (state.isOverrideActive) {
                     isOverrideActive = true;
-                    overrideImageUrl = state.overrideImageUrl.trim();
-                    console.log(`[Image Display] override状態を復元: ${overrideImageUrl}`);
+                    overrideImageUrl = (typeof state.overrideImageUrl === 'string' && state.overrideImageUrl.trim())
+                        ? state.overrideImageUrl.trim()
+                        : null;
+                    console.log(`[Image Display] override状態を復元: ${overrideImageUrl || '(デフォルト)'}`);
                 } else {
                     isOverrideActive = false;
                     overrideImageUrl = null;
@@ -1025,7 +1011,6 @@
         maximizeButton.classList.add('disabled');
         halfMaximizeButton.classList.remove('disabled');
         halfMaximizeButton.classList.add('enabled');
-        // ★ カスタムボタンは常に有効のまま
         customButton.classList.remove('disabled');
         customButton.classList.add('enabled');
         currentMode = 'maximized';
@@ -1052,7 +1037,6 @@
         maximizeButton.classList.add('enabled');
         halfMaximizeButton.classList.remove('enabled');
         halfMaximizeButton.classList.add('disabled');
-        // ★ カスタムボタンは常に有効のまま
         customButton.classList.remove('disabled');
         customButton.classList.add('enabled');
         currentMode = 'halfMaximized';
@@ -1166,21 +1150,13 @@
 
                 safeOn(eventTypes.STREAM_TOKEN_RECEIVED, handleStreamingUpdate);
 
-                // ★ ユーザー操作系イベントは「デバウンスなしで直接呼ぶ」。
-                //   理由：SillyTavernの他拡張が USER_MESSAGE_RENDERED 後に重い同期処理
-                //   （"Running extension interceptors" 等）を行うと、setTimeout タイマー
-                //   コールバックの実行が遅延し、画像切替が数秒〜10秒遅れることがある。
-                //   同期部分（findLastKeywordImage）を他拡張の処理前に実行することで、
-                //   画像要素のロードを先行開始できる。
                 const immediateUpdate = () => {
                     updateImage();
                 };
 
-                // AI メッセージ・ユーザーメッセージの描画完了時は即時更新
                 safeOn(eventTypes.CHARACTER_MESSAGE_RENDERED, immediateUpdate);
                 safeOn(eventTypes.USER_MESSAGE_RENDERED, immediateUpdate);
 
-                // メッセージ削除・編集・チャット読み込み時は即時更新
                 if (eventTypes.MESSAGE_DELETED) safeOn(eventTypes.MESSAGE_DELETED, immediateUpdate);
                 if (eventTypes.MESSAGE_EDITED) safeOn(eventTypes.MESSAGE_EDITED, immediateUpdate);
                 if (eventTypes.CHAT_LOADED) safeOn(eventTypes.CHAT_LOADED, immediateUpdate);
@@ -1199,7 +1175,7 @@
 
     // --- 初期ロードとポーリング ---
     setupEventSourceListeners();
-    setupSendInterception();  // ★ 送信操作の傍受を開始
+    setupSendInterception();
     loadCharacterData(true);
     setupChatDomObserver();
 
@@ -1214,10 +1190,6 @@
     // ===== Gallery連動：公式ギャラリー表示中はコントロールボタンを非表示 =====
     // ===================================================================
 
-    /**
-     * SillyTavern公式ギャラリーが表示中かどうかを判定
-     * 複数の候補セレクタをチェックし、いずれかが可視状態なら true を返す
-     */
     function isGalleryOpen() {
         const candidates = document.querySelectorAll([
             '#gallery_container',
@@ -1233,13 +1205,10 @@
         for (const el of candidates) {
             if (!el) continue;
             const style = window.getComputedStyle(el);
-            // display/visibility/opacity のいずれかで隠れていればスキップ
             if (style.display === 'none') continue;
             if (style.visibility === 'hidden') continue;
             if (parseFloat(style.opacity) === 0) continue;
-            // offsetParent が null なら非表示扱い
             if (el.offsetParent === null && style.position !== 'fixed') continue;
-            // サイズがゼロなら非表示扱い
             const rect = el.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) continue;
             return true;
@@ -1247,16 +1216,12 @@
         return false;
     }
 
-    /**
-     * ギャラリーの開閉状態に応じてコントロールボタン群の表示/非表示を切り替える
-     */
     let lastGalleryState = null;
     function updateControlContainerVisibility() {
         const galleryOpen = isGalleryOpen();
-        if (galleryOpen === lastGalleryState) return; // 変化なしなら何もしない
+        if (galleryOpen === lastGalleryState) return;
         lastGalleryState = galleryOpen;
 
-        // IDE自身のコントロールボタン群
         if (galleryOpen) {
             controlContainer.style.display = 'none';
             console.log('📷 ギャラリー表示中 → コントロールボタンを非表示');
@@ -1265,24 +1230,18 @@
             console.log('📷 ギャラリー非表示 → コントロールボタンを再表示');
         }
 
-        // ★ GIC（Generate Image Controller）のトグルボタンも連動して非表示/再表示
         const gicButton = document.getElementById('gic-release-override-button');
         if (gicButton) {
             if (galleryOpen) {
                 gicButton.style.display = 'none';
                 console.log('📷 ギャラリー表示中 → GICトグルボタンを非表示');
             } else {
-                gicButton.style.display = '';   // 元のスタイル（インラインスタイル）に戻す
+                gicButton.style.display = '';
                 console.log('📷 ギャラリー非表示 → GICトグルボタンを再表示');
             }
         }
     }
 
-    /**
-     * ギャラリーの開閉を監視
-     * - body全体のDOM変更をMutationObserverで監視
-     * - 併せて定期的にチェック（スタイル変化で検出できないケースの保険）
-     */
     function setupGalleryObserver() {
         const galleryObserver = new MutationObserver(() => {
             updateControlContainerVisibility();
@@ -1294,15 +1253,12 @@
             attributeFilter: ['style', 'class'],
         });
 
-        // 定期的なチェック（保険）
         setInterval(updateControlContainerVisibility, 300);
 
-        // 初回チェック
         updateControlContainerVisibility();
         console.log('📷 ギャラリー連動監視を開始しました');
     }
 
-    // ギャラリー連動を開始
     setupGalleryObserver();
 
     // ===================================================================
@@ -1310,29 +1266,42 @@
     // ===================================================================
     window.ImageDisplayExtension = {
         /**
-         * 指定URLの画像を強制表示（キーワードマッチを無視）
-         * @param {string} url - 表示する画像URL
+         * 画像を強制表示（キーワードマッチを無視）する。
+         * @param {string} url - 表示する画像URL。
+         *                       空文字/未指定の場合は「overrideモード + デフォルト画像」となる。
          * @returns {Promise<boolean>}
          */
         setOverrideImage: async function (url) {
-            if (!url || typeof url !== 'string' || !url.trim()) return false;
-            overrideImageUrl = url.trim();
+            // ★ 空URLは「デフォルト画像で override モードに入る」を意味する
+            const cleanUrl = (url && typeof url === 'string') ? url.trim() : '';
+
+            overrideImageUrl = cleanUrl || null;
             isOverrideActive = true;
-            console.log(`🎯 外部連携: 画像を強制表示 ${overrideImageUrl}`);
-            await updateImageWithUrl(overrideImageUrl);
-            saveDisplayState();   // ★ override 状態を永続化
+
+            if (overrideImageUrl) {
+                console.log(`🎯 外部連携: 画像を強制表示 ${overrideImageUrl}`);
+                await updateImageWithUrl(overrideImageUrl);
+            } else {
+                console.log(`🎯 外部連携: 強制表示モードON（デフォルト画像）`);
+                const fallback = getRandomImageSource(currentImageMap.default) || currentImageMap.default;
+                if (fallback && typeof fallback === 'string' && fallback.trim()) {
+                    await updateImageWithUrl(fallback);
+                }
+            }
+            saveDisplayState();
             return true;
         },
 
         /**
-         * 強制表示を解除し、通常のキーワードマッチに戻す
+         * 強制表示を解除し、通常のキーワードマッチに戻す。
          */
         clearOverrideImage: function () {
-            if (!isOverrideActive) return;
+            const wasActive = isOverrideActive;
             isOverrideActive = false;
             overrideImageUrl = null;
-            console.log(`🎯 外部連携: 強制表示を解除`);
-            saveDisplayState();   // ★ override 解除を永続化
+            console.log(`🎯 外部連携: 強制表示を解除（旧状態: active=${wasActive}）`);
+            saveDisplayState();
+            // 状態の如何に関わらず再評価（キーワードマッチモードへ）
             safeUpdateImage();
         },
 
@@ -1348,6 +1317,13 @@
          */
         isOverride: function () {
             return isOverrideActive;
+        },
+
+        /**
+         * 強制表示モードのURL（null = デフォルト画像扱い）を取得
+         */
+        getOverrideImageUrl: function () {
+            return overrideImageUrl;
         },
     };
     console.log("✅ Image Display Extension API を window.ImageDisplayExtension に公開しました");
