@@ -227,13 +227,13 @@
 
     const customButton = document.createElement('button');
     customButton.id = 'custom-button';
-    customButton.textContent = 'カスタム';
+    customButton.textContent = '手動';
     customButton.title = '位置とサイズを手動設定';
     controlContainer.appendChild(customButton);
 
     const maximizeButton = document.createElement('button');
     maximizeButton.id = 'maximize-button';
-    maximizeButton.textContent = '全画面';
+    maximizeButton.textContent = 'フル';
     maximizeButton.title = '全画面モードに切替';
     maximizeButton.classList.add('enabled');
     controlContainer.appendChild(maximizeButton);
